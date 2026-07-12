@@ -12,7 +12,7 @@ packed tarball. Both are fully supported and end-to-end tested.
 npm i -D 'git+https://github.com/pmccurley87/emberflow.git'
 
 # pin to a branch, tag, or commit:
-npm i -D 'git+https://github.com/pmccurley87/emberflow.git#main'
+npm i -D 'git+https://github.com/xdelivered/emberflow.git#main'
 ```
 
 npm runs the package's guarded `prepare` script on git installs: it builds the

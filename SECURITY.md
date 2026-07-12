@@ -57,5 +57,6 @@ be `chmod 600`. The committed `emberflow.environments.json` holds only the
 
 ## Reporting a vulnerability
 
-Please report security issues privately to **patrick@xdelivered.com**. Do not open a public issue for anything
-exploitable. We'll acknowledge and work a fix before any public disclosure.
+Please report security issues privately to **patrick@xdelivered.com**. Do not
+open a public issue for anything exploitable. We'll acknowledge and work a fix
+before any public disclosure.
