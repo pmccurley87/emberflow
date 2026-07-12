@@ -1,0 +1,70 @@
+{
+  "id": "anomaly-key-lifecycle",
+  "name": "Keys · Issue & Limit",
+  "version": 1,
+  "folder": "Anomaly API",
+  "nodes": [
+    {
+      "id": "generate",
+      "type": "GenerateApiKey",
+      "label": "Generate API Key",
+      "position": {
+        "x": 60,
+        "y": 200
+      },
+      "config": {
+        "label": "production"
+      }
+    },
+    {
+      "id": "enforce",
+      "type": "EnforceKeyLimit",
+      "label": "Enforce Key Limit",
+      "position": {
+        "x": 310,
+        "y": 200
+      },
+      "config": {
+        "activeKeyCount": 3
+      },
+      "inputMap": {
+        "keyPrefix": {
+          "sourceNodeId": "generate",
+          "sourceField": "keyPrefix"
+        }
+      }
+    },
+    {
+      "id": "result",
+      "type": "Result",
+      "label": "Issued Key",
+      "position": {
+        "x": 560,
+        "y": 200
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "enforce",
+          "sourceField": "$"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "generate",
+      "target": "enforce",
+      "targetHandle": "keyPrefix"
+    },
+    {
+      "id": "e2",
+      "source": "enforce",
+      "target": "result",
+      "targetHandle": "data"
+    }
+  ],
+  "createdAt": "2026-07-02T00:00:00Z",
+  "updatedAt": "2026-07-02T00:00:00Z"
+}

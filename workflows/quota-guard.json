@@ -1,0 +1,229 @@
+{
+  "id": "quota-guard",
+  "name": "Quota Guard",
+  "version": 1,
+  "folder": "Ops",
+  "nodes": [
+    {
+      "id": "input",
+      "type": "Input",
+      "label": "Usage Snapshot",
+      "position": {
+        "x": -180,
+        "y": 240
+      },
+      "config": {
+        "fields": [
+          {
+            "name": "calls",
+            "type": "number",
+            "required": true
+          }
+        ],
+        "defaults": {
+          "calls": 51000
+        }
+      }
+    },
+    {
+      "id": "plan",
+      "type": "PlanCatalog",
+      "label": "Plan Catalog",
+      "position": {
+        "x": 60,
+        "y": 240
+      },
+      "config": {
+        "planCode": "anomaly_starter"
+      }
+    },
+    {
+      "id": "usage",
+      "type": "UsageState",
+      "label": "Usage State",
+      "position": {
+        "x": 300,
+        "y": 240
+      },
+      "config": {
+        "calls": 51000
+      },
+      "inputMap": {
+        "quota": {
+          "sourceNodeId": "plan",
+          "sourceField": "quota"
+        },
+        "calls": {
+          "sourceNodeId": "input",
+          "sourceField": "calls"
+        }
+      }
+    },
+    {
+      "id": "classify",
+      "type": "ClassifyQuotaEmail",
+      "label": "Classify Quota Email",
+      "position": {
+        "x": 540,
+        "y": 240
+      },
+      "config": {
+        "alreadyWarned": false,
+        "alreadyNotifiedExceeded": false
+      },
+      "inputMap": {
+        "warn80": {
+          "sourceNodeId": "usage",
+          "sourceField": "warn80"
+        },
+        "overQuota": {
+          "sourceNodeId": "usage",
+          "sourceField": "overQuota"
+        }
+      }
+    },
+    {
+      "id": "route",
+      "type": "Route",
+      "label": "Email action?",
+      "position": {
+        "x": 780,
+        "y": 240
+      },
+      "config": {
+        "field": "action",
+        "branches": [
+          "exceeded",
+          "warning"
+        ],
+        "fallback": "none"
+      },
+      "inputMap": {
+        "value": {
+          "sourceNodeId": "classify",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "exceededResult",
+      "type": "Result",
+      "label": "Send Exceeded Email",
+      "position": {
+        "x": 1016.4816556914393,
+        "y": -102.25776105362182
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "classify",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "warningResult",
+      "type": "Result",
+      "label": "Send Warning Email",
+      "position": {
+        "x": 1142.304797742239,
+        "y": 87.13076199435561
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "classify",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "noneResult",
+      "type": "Result",
+      "label": "No Action",
+      "position": {
+        "x": 1098.7958607714017,
+        "y": 380
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "usage",
+          "sourceField": "$"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e0",
+      "source": "input",
+      "target": "usage",
+      "targetHandle": "calls"
+    },
+    {
+      "id": "e1",
+      "source": "plan",
+      "target": "usage",
+      "targetHandle": "quota"
+    },
+    {
+      "id": "e2",
+      "source": "usage",
+      "target": "classify",
+      "targetHandle": "warn80"
+    },
+    {
+      "id": "e3",
+      "source": "classify",
+      "target": "route",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e4",
+      "source": "route",
+      "target": "exceededResult",
+      "sourceHandle": "exceeded"
+    },
+    {
+      "id": "e5",
+      "source": "route",
+      "target": "warningResult",
+      "sourceHandle": "warning"
+    },
+    {
+      "id": "e6",
+      "source": "route",
+      "target": "noneResult",
+      "sourceHandle": "none"
+    }
+  ],
+  "createdAt": "2026-07-02T21:00:00Z",
+  "updatedAt": "2026-07-02T21:00:00Z",
+  "scenarios": [
+    {
+      "id": "scn-none",
+      "name": "quiet month",
+      "description": "30k/50k Starter calls — no email, none branch",
+      "input": {
+        "calls": 30000
+      }
+    },
+    {
+      "id": "scn-warning",
+      "name": "approaching limit",
+      "description": "42k/50k calls — past 80%, warning branch",
+      "input": {
+        "calls": 42000
+      }
+    },
+    {
+      "id": "scn-exceeded",
+      "name": "over quota",
+      "description": "51k/50k calls — exceeded branch",
+      "input": {
+        "calls": 51000
+      }
+    }
+  ]
+}

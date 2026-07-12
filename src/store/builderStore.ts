@@ -1,0 +1,1856 @@
+import { create } from 'zustand';
+import { InMemoryTraceSink, runOutput, startRun } from '../engine';
+import type {
+  FieldMapping, FlowRun, LogLine, NodeRegistry, ScenarioDefinition, StartRunOptions,
+  SubflowResult, WorkflowDefinition, WorkflowNode, WorkflowRun,
+} from '../engine';
+import { createDefaultRegistry } from '../nodes';
+import { createLoginFlow } from '../flows/login-flow';
+import { createWeatherFlow } from '../flows/weather-flow';
+import { createAnomalyFlows } from '../flows/anomaly-flows';
+import { createCitySweepFlow } from '../flows/city-sweep-flow';
+import { createPradarFlows } from '../flows/pradar-flows';
+import { loadWorkspace, parseFlow, saveWorkspace, serializeFlow } from './persistence';
+import { fetchNodeMeta } from './nodeMeta';
+import {
+  cancelServerRun,
+  createOperationOnServer,
+  deleteWorkflowOnServer,
+  fetchWorkflows,
+  deleteEnvironmentSecret as deleteEnvironmentSecretOnServer,
+  listEnvironments,
+  loginEnvironment as loginEnvironmentOnServer,
+  putWorkflow,
+  runnerHealthy,
+  setEnvironmentAuth as setEnvironmentAuthOnServer,
+  setEnvironmentSecret as setEnvironmentSecretOnServer,
+  setServingMode as setServingModeOnServer,
+  startServerRun,
+  stepServerRun,
+  subscribeServerRun,
+  testWorkflow as testWorkflowOnServer,
+} from './serverRunner';
+import type {
+  EnvAuth, ErrorHandlerTag, EnvironmentSummary, ScenarioTestReport, ServerRunOptions,
+} from './serverRunner';
+import { cancelAgent, fetchAgentDiff, revertAgent, startAgent, streamAgent } from './agentClient';
+import type { AgentEvent, AgentIntent, AgentKind, StartAgentOptions } from './agentClient';
+
+export interface WorkflowSummary {
+  id: string;
+  name: string;
+  folder?: string;
+  /** On-disk relative path (from the runner's ApiStore), when known. */
+  path?: string;
+  /** HTTP trigger method/path, when this operation is routed. */
+  http?: { method: string; path: string };
+}
+
+/** Per-operation path/http metadata, keyed by id — sourced from the runner's
+ *  `/workflows` `operations` array (the store's `WorkflowDefinition`s don't
+ *  carry `path`, since path is a filesystem concept, not a flow field). */
+export type OpMeta = Map<string, { path: string; http?: { method: string; path: string } }>;
+
+/** Drop one flow's scenario-test report (no-op when absent) — scenario edits
+ *  make the last report stale. */
+function dropReport(
+  reports: Record<string, ScenarioTestReport>,
+  flowId: string,
+): Record<string, ScenarioTestReport> {
+  if (!(flowId in reports)) return reports;
+  const { [flowId]: _stale, ...rest } = reports;
+  return rest;
+}
+
+
+/** A finished run plus builder-side context the engine doesn't track. */
+export type RunHistoryEntry = WorkflowRun & {
+  scenarioName?: string;
+  /** Present only when this run was fired by an error-handler op. */
+  errorHandler?: ErrorHandlerTag;
+  /** True when the run executed against scenario mocks (Mock mode) — a mocked
+   *  run must never be mistaken for a real one in history. */
+  mock?: boolean;
+};
+
+interface BuilderState {
+  flow: WorkflowDefinition;
+  /** Flows other than the active one. */
+  shelf: WorkflowDefinition[];
+  /** id/name of every workflow, active first. */
+  workflows: WorkflowSummary[];
+  createWorkflow(): void;
+  switchWorkflow(id: string): void;
+  moveWorkflowToFolder(id: string, folder: string | null): void;
+  /** id -> path/http metadata sourced from the runner's `/workflows` `operations` array. */
+  opMeta: OpMeta;
+  /**
+   * Create a new operation (a routed or internal flow) at `${api}/${folder ?
+   * folder + '/' : ''}${slug(name)}`, save it to the runner at that exact
+   * path (new nested ops can't rely on PUT's existing-path lookup), refresh
+   * from the runner, and select it. The runner refuses to overwrite an
+   * existing operation at that path (409) — that failure is surfaced in the
+   * returned result rather than silently swallowed, and the workspace is not
+   * refreshed/switched on failure.
+   */
+  createOperation(input: {
+    api: string;
+    folder?: string;
+    name: string;
+    method?: string;
+    httpPath?: string;
+  }): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Delete one or more operations by flow id (an API delete passes every op id
+   * under it). Removes each on the runner, then re-syncs — if the open flow was
+   * among them, syncFromRunner falls back to another flow automatically.
+   */
+  deleteOperations(ids: string[]): Promise<{ ok: boolean; error?: string }>;
+  registry: NodeRegistry;
+  trace: InMemoryTraceSink;
+  run: WorkflowRun | null;
+  logs: LogLine[];
+  selectedNodeId: string | null;
+  activeRun: FlowRun | null;
+  dockTab: 'logs' | 'output' | 'infra';
+  setDockTab(tab: 'logs' | 'output' | 'infra'): void;
+  /** 'auto' resolves to the runner when it's reachable, browser otherwise. */
+  executionMode: 'auto' | 'browser' | 'server';
+  setExecutionMode(mode: 'auto' | 'browser' | 'server'): void;
+  /** Where the next run will actually execute. */
+  effectiveMode(): 'browser' | 'server';
+  /** null = not yet checked. */
+  runnerOnline: boolean | null;
+  /** True when the reachable runner is serving EMBERFLOW_MOCK responses
+   *  (from /healthz's `mock` field) rather than live execution. False when
+   *  offline or not mocked. */
+  runnerMock: boolean;
+  /** Flip the runner's serving mode (mock answers from scenario expects; real
+   *  executes). Re-checks the runner so `runnerMock` reflects the live state. */
+  setServingMode(mode: 'real' | 'mock'): Promise<void>;
+  checkRunner(): Promise<void>;
+  /** Fetch consumer-node metadata from the runner and merge definition-only entries into the registry. */
+  syncNodeMeta(): Promise<void>;
+
+  /** Runner environments (key names only; empty when the runner is offline). */
+  environments: EnvironmentSummary[];
+  /** The runner's default environment name. */
+  environmentsDefault: string;
+  /** The environment the next run points at (persisted, like executionMode). */
+  selectedEnvironment: string;
+  /** When on, mutation nodes dry-run their writes (persisted). */
+  safeMode: boolean;
+  /** Refresh environments from the runner; clears the list when offline. */
+  fetchEnvironments(): Promise<void>;
+  /** Select an environment; protected environments force safe mode on. */
+  selectEnvironment(name: string): void;
+  /**
+   * Fire the environment's configured login request, then re-fetch
+   * environments so `environments[].auth.authenticated` reflects the
+   * runner's freshly-persisted credential. Rethrows on failure.
+   */
+  loginEnvironment(name: string): Promise<void>;
+  /**
+   * Set a secret's value on an environment, then re-fetch environments so
+   * `environments[].secretKeys` reflects the runner's freshly-persisted key.
+   * The value transits studio→runner only over this call.
+   */
+  setEnvironmentSecret(name: string, key: string, value: string): Promise<void>;
+  /** Delete a secret from an environment, then re-fetch environments. */
+  deleteEnvironmentSecret(name: string, key: string): Promise<void>;
+  /**
+   * Set (or, with `null`, clear) an environment's login-auth config, then
+   * re-fetch environments so `environments[].auth` reflects the change.
+   */
+  setEnvironmentAuth(name: string, auth: EnvAuth | null): Promise<void>;
+  /**
+   * Toggle safe mode. Turning it OFF on a protected environment requires
+   * `confirmName` to equal the selected environment; otherwise it is a no-op
+   * and returns false (the UI drives the typed-confirm dialog).
+   */
+  setSafeMode(on: boolean, confirmName?: string): boolean;
+  /** Whether the workspace mirrors the runner's files or local storage. */
+  workspaceSource: 'local' | 'server';
+  /** Adopt the runner's workflow set as the workspace (one-shot on adoption). */
+  syncFromRunner(): Promise<void>;
+  /** Live server-side run id, when executing in server mode. */
+  activeServerRunId: string | null;
+  /** True while a stepped run is in progress (started via Step, not Run) — drives
+   * the toolbar's step-over affordance. Cleared when the run finishes or resets. */
+  stepMode: boolean;
+  sidebarOpen: boolean;
+  toggleSidebar(): void;
+  /** Whether the bottom dock panel is mounted (persisted). */
+  dockOpen: boolean;
+  toggleDock(): void;
+  /** Whether the right-hand inspector panel is mounted (persisted). */
+  inspectorOpen: boolean;
+  toggleInspector(): void;
+  /** Whether the Agent panel is open — a persistent surface for chatting with
+   *  the agent about the open operation (starting a run auto-opens it). */
+  agentPanelOpen: boolean;
+  toggleAgentPanel(): void;
+  /** True while the agent panel is in environment-setup mode: its chat input
+   *  dispatches setup-environments instead of edit-flow. Entered from the
+   *  Environments dialog's call-to-action; cleared when the panel closes. */
+  agentEnvSetup: boolean;
+  beginEnvironmentSetup(): void;
+  /** Dispatch the infrastructure scout (scout-infrastructure intent): reads the
+   *  project's deps/config/ORM/env-refs and writes emberflow/infrastructure.json.
+   *  Shared by the Welcome checklist and the Dock's Infra tab empty state. */
+  beginInfrastructureScout(): void;
+  /** Whether the first-run Welcome/Setup checklist dialog is open. Auto-opened
+   *  on a fresh project (see WelcomeDialog); always reachable from the Toolbar. */
+  welcomeOpen: boolean;
+  setWelcomeOpen(open: boolean): void;
+  /** Whether the Settings dialog is open. Lifted to the store so the Welcome
+   *  checklist's "coding agent" row can deep-link into it. */
+  settingsOpen: boolean;
+  setSettingsOpen(open: boolean): void;
+  /** Open the agent panel (no toggle). */
+  openAgentPanel(): void;
+  /** Where the run console docks (persisted). Default 'right'. */
+  /** null = no explicit choice — the register decides (technical → bottom, simple → right). */
+  consolePosition: 'right' | 'bottom' | null;
+  setConsolePosition(position: 'right' | 'bottom'): void;
+  /**
+   * Which register the runbook document speaks: 'simple' shows outcomes,
+   * 'technical' reveals trace kinds, type names and the technical outcome line.
+   * Persisted; default simple.
+   */
+  viewRegister: 'simple' | 'technical';
+  setViewRegister(register: 'simple' | 'technical'): void;
+  /**
+   * Run whose console the user dismissed. The console is available whenever a
+   * watched run exists; dismissing hides it, reopening (or a new run) shows it.
+   */
+  runConsoleDismissedId: string | null;
+  dismissRunConsole(): void;
+  reopenRunConsole(): void;
+  /**
+   * Run ids the user has explicitly opened the console for. In the simple
+   * register, starting a run does not summon the console — only an explicit
+   * toolbar open does, tracked here so that run's console then behaves like
+   * the technical register's for its remaining lifetime. Session-only, not
+   * persisted; the technical register ignores this set entirely (always open).
+   */
+  runConsoleOpenedIds: Set<string>;
+  /** Finished runs, newest first, across all workflows (session-scoped). */
+  runHistory: RunHistoryEntry[];
+  /** Log lines captured for each finished run. */
+  logsByRun: Record<string, LogLine[]>;
+  recordRun(run: WorkflowRun, errorHandler?: ErrorHandlerTag): void;
+  /** Scenario that started the live run (tags its history entry). */
+  activeScenarioId: string | null;
+  /** Run the flow to the end with a named scenario's input as the run payload. */
+  runScenario(scenarioId: string): Promise<void>;
+  /** Start a stepped run with a scenario's input: first node executes, Step continues. */
+  stepScenario(scenarioId: string): Promise<void>;
+  /**
+   * Latest scenario-suite test report per flow id, from POST
+   * /workflows/:id/test (server/testRunner.ts — no expectation logic is
+   * duplicated studio-side). Studio test runs never enter runHistory: they
+   * don't go through recordRun/SSE.
+   */
+  scenarioTestReports: Record<string, ScenarioTestReport>;
+  /** Flow id currently awaiting its test report, or null when idle. */
+  scenarioTestPending: string | null;
+  /** Run flowId's scenario suite on the runner and store the report. */
+  testWorkflow(flowId: string, environment?: string): Promise<void>;
+  addScenario(
+    name: string,
+    input: Record<string, unknown>,
+    description?: string,
+    expect?: ScenarioDefinition['expect'],
+  ): void;
+  updateScenario(id: string, patch: Partial<Omit<ScenarioDefinition, 'id'>>): void;
+  removeScenario(id: string): void;
+  /** Whether the currently-active run executes against mocks — stamped at run
+   *  start, copied onto its history entry when it finishes. */
+  activeRunMock: boolean;
+  /** Load a past run's snapshot (statuses + logs) into the view. */
+  viewRun(runId: string): void;
+
+  /**
+   * A studio-triggered coding-agent run (new-scenario/edit-node/edit-flow),
+   * streamed live from the server's /agent endpoints. null when no agent run
+   * has been started this session (or after it's been dismissed).
+   */
+  agentRun: {
+    id: string;
+    events: AgentEvent[];
+    status: 'running' | 'done' | 'error';
+    /** The instruction the user sent — shown as the first (user) message in the panel. */
+    instruction?: string;
+    diff?: string;
+    files?: string[];
+  } | null;
+  /** Persisted agent+model picked in Settings; used as runAgent's default opts. */
+  agentChoice: AgentChoice;
+  setAgentChoice(choice: AgentChoice): void;
+  /** Start a coding-agent run and stream its events into `agentRun`. */
+  runAgent(intent: AgentIntent, opts?: StartAgentOptions): Promise<void>;
+  /**
+   * The operation currently being scaffolded by the create flow. Its stub is
+   * already selected; the canvas shows a "waiting for the agent" holding pattern
+   * until the agent finishes writing it. Cleared when the agent run completes.
+   */
+  buildingOperationId: string | null;
+  /**
+   * Create a stub operation (name + HTTP route) at `location`, select it so the
+   * canvas shows the shell immediately, then kick an `edit-flow` agent run to
+   * build out its logic. Powers the New API / New operation modal — the user
+   * sees what they're building before the agent fills it in.
+   */
+  createAndBuild(input: {
+    location: string;
+    name: string;
+    method: string;
+    httpPath: string;
+    goal: string;
+  }): Promise<{ ok: boolean; error?: string }>;
+  /** Revert the agent run's file changes, then reload flows from the runner. */
+  revertAgentRun(): Promise<void>;
+  /** Hide the agent console without affecting the underlying run. */
+  dismissAgentRun(): void;
+
+  addNode(type: string, position: { x: number; y: number }): void;
+  moveNode(id: string, position: { x: number; y: number }): void;
+  /** Persist a display node's canvas size (metadata.size). */
+  resizeNode(id: string, size: { width: number; height: number }): void;
+  removeNode(id: string): void;
+  removeEdge(id: string): void;
+  connect(source: string, target: string, targetHandle?: string, sourceHandle?: string): void;
+  selectNode(id: string | null): void;
+  renameFlow(name: string): void;
+  /** Replace (or clear) the active flow's `http` trigger — Inspector's HTTP
+   *  section is the only writer; pass undefined to demote the flow back to
+   *  an internal sub-flow. */
+  setFlowHttp(http: WorkflowDefinition['http']): void;
+  renameNode(id: string, label: string): void;
+  updateNodeConfig(id: string, key: string, value: unknown): void;
+  /** Set (or clear with undefined) a node's retry policy — engine retries the
+   *  implementation call maxTries total times with waitMs between attempts. */
+  setNodeRetry(id: string, retry: WorkflowNode['retry']): void;
+  /** Seed an empty ("") default for `param` under the first Input node's
+   *  `config.defaults.params`, creating nested objects immutably as needed,
+   *  then saves — the same fix `doctor --fix` applies. Never overwrites an
+   *  existing value; no-op if the flow has no Input node. */
+  seedParamDefault(param: string): void;
+  setInputMapping(nodeId: string, field: string, mapping: FieldMapping | null): void;
+  pinNodeOutput(nodeId: string, output: unknown): void;
+  unpinNode(nodeId: string): void;
+  /**
+   * Execute one node directly against the given input (browser-side),
+   * capturing logs and recording a trace sample. Does not touch run state.
+   */
+  runNodeIsolated(
+    nodeId: string,
+    input: Record<string, unknown>,
+  ): Promise<{ output?: unknown; error?: string; logs: LogLine[] }>;
+
+  stepRun(): Promise<void>;
+  runToEnd(): Promise<void>;
+  resetRun(): void;
+
+  saveFlow(): void;
+  loadFlow(): void;
+  exportFlow(): string;
+  importFlow(json: string): void;
+}
+
+const registry = createDefaultRegistry();
+
+/** Max depth of nested Subflow calls (ancestry chain length) before a run fails. */
+export const SUBFLOW_DEPTH_CAP = 8;
+
+/**
+ * A prefixed copy of a child-run log line, folded into the parent's stream:
+ * label becomes "<ChildFlow> › <nodeLabel>" and the console id is namespaced
+ * under the calling Subflow node so console clicks don't collide with parent
+ * ids.
+ */
+function prefixSubflowLog(line: LogLine, childName: string, callerNodeId: string): LogLine {
+  return {
+    ...line,
+    nodeLabel: `${childName} › ${line.nodeLabel ?? ''}`,
+    nodeId: line.nodeId ? `${callerNodeId}/${line.nodeId}` : callerNodeId,
+  };
+}
+
+/** Build the cycle/depth error a subflow guard reports for a given ancestry. */
+function subflowGuardError(ancestry: string[], workflowId: string): string | null {
+  if (ancestry.length >= SUBFLOW_DEPTH_CAP) {
+    return `subflow depth cap (${SUBFLOW_DEPTH_CAP}) exceeded`;
+  }
+  if (ancestry.includes(workflowId)) {
+    return `subflow cycle: ${[...ancestry, workflowId].join(' → ')}`;
+  }
+  return null;
+}
+
+function touched(flow: WorkflowDefinition): WorkflowDefinition {
+  return { ...flow, updatedAt: new Date().toISOString() };
+}
+
+function summaries(
+  active: WorkflowDefinition,
+  shelf: WorkflowDefinition[],
+  opMeta: OpMeta = new Map(),
+): WorkflowSummary[] {
+  return [active, ...shelf].map((f) => {
+    const meta = opMeta.get(f.id);
+    return {
+      id: f.id,
+      name: f.name,
+      folder: f.folder,
+      ...(meta ? { path: meta.path, http: meta.http } : {}),
+    };
+  });
+}
+
+/** slug: lowercase, spaces -> '-', strip anything not URL-safe (alnum/hyphen). */
+function slug(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '');
+}
+
+/** Derive nodeId -> pinned output from a flow's node metadata. */
+export function pinsOf(flow: WorkflowDefinition): Record<string, unknown> {
+  const pins: Record<string, unknown> = {};
+  for (const n of flow.nodes) {
+    if (n.metadata && 'pinnedOutput' in n.metadata) pins[n.id] = n.metadata.pinnedOutput;
+  }
+  return pins;
+}
+
+function emptyFlow(): WorkflowDefinition {
+  const now = new Date().toISOString();
+  return {
+    id: crypto.randomUUID(),
+    name: 'Untitled Flow',
+    version: 1,
+    nodes: [],
+    edges: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+const workspace = loadWorkspace();
+const exampleFlows = [
+  createWeatherFlow(),
+  createLoginFlow(),
+  ...createAnomalyFlows(),
+  createCitySweepFlow(),
+  ...createPradarFlows(),
+];
+// Saved flows win; example flows the workspace doesn't know yet are merged in.
+const exampleById = new Map(exampleFlows.map((f) => [f.id, f]));
+const savedFlows = (workspace?.flows ?? []).map((f) => {
+  // Backfill the preferred environment onto older saved copies of built-in
+  // flows that predate the field, without clobbering user edits.
+  if (f.environment === undefined && exampleById.get(f.id)?.environment) {
+    return { ...f, environment: exampleById.get(f.id)!.environment };
+  }
+  return f;
+});
+const savedIds = new Set(savedFlows.map((f) => f.id));
+const initialFlows = [...savedFlows, ...exampleFlows.filter((f) => !savedIds.has(f.id))];
+const initialFlow =
+  initialFlows.find((f) => f.id === workspace?.activeId) ?? initialFlows[0];
+const initialShelf = initialFlows.filter((f) => f.id !== initialFlow.id);
+
+const ENV_KEY = 'emberflow.environment';
+const SAFE_KEY = 'emberflow.safeMode';
+const SIDEBAR_KEY = 'emberflow.panel.sidebar';
+const DOCK_KEY = 'emberflow.panel.dock';
+const INSPECTOR_KEY = 'emberflow.panel.inspector';
+const REGISTER_KEY = 'emberflow.view.register';
+const CONSOLE_POSITION_KEY = 'emberflow.console.position';
+const AGENT_CHOICE_KEY = 'emberflow.agentChoice';
+
+function persistEnvironment(name: string): void {
+  if (typeof localStorage !== 'undefined') localStorage.setItem(ENV_KEY, name);
+}
+function persistSafeMode(on: boolean): void {
+  if (typeof localStorage !== 'undefined') localStorage.setItem(SAFE_KEY, on ? '1' : '0');
+}
+/** Panels default open: only an explicit stored '0' hides them. */
+function loadPanel(key: string): boolean {
+  return typeof localStorage !== 'undefined' ? localStorage.getItem(key) !== '0' : true;
+}
+function persistPanel(key: string, open: boolean): void {
+  if (typeof localStorage !== 'undefined') localStorage.setItem(key, open ? '1' : '0');
+}
+const initialSelectedEnvironment =
+  typeof localStorage !== 'undefined' ? localStorage.getItem(ENV_KEY) ?? '' : '';
+// Simple register by default: only an explicit stored 'technical' opts in.
+// Legacy stored value 'business' (pre-rename) normalizes to 'simple'.
+const initialViewRegister: 'simple' | 'technical' =
+  typeof localStorage !== 'undefined' && localStorage.getItem(REGISTER_KEY) === 'technical'
+    ? 'technical'
+    : 'simple';
+// null = user never chose; the effective position follows the register
+// (technical reads best as a bottom log; simple as a right column).
+const storedConsolePosition = typeof localStorage !== 'undefined' ? localStorage.getItem(CONSOLE_POSITION_KEY) : null;
+const initialConsolePosition: 'right' | 'bottom' | null =
+  storedConsolePosition === 'bottom' || storedConsolePosition === 'right' ? storedConsolePosition : null;
+
+/** The position the console actually renders at, honoring an explicit choice first. */
+export function effectiveConsolePosition(
+  position: 'right' | 'bottom' | null,
+  register: 'simple' | 'technical',
+): 'right' | 'bottom' {
+  return position ?? (register === 'technical' ? 'bottom' : 'right');
+}
+// Safe by default: only an explicit stored '0' opts out.
+const initialSafeMode =
+  typeof localStorage !== 'undefined' ? localStorage.getItem(SAFE_KEY) !== '0' : true;
+
+export interface AgentChoice {
+  agent?: AgentKind;
+  model?: string;
+  reasoning?: 'low' | 'medium' | 'high';
+}
+
+function persistAgentChoice(choice: AgentChoice): void {
+  if (typeof localStorage !== 'undefined') localStorage.setItem(AGENT_CHOICE_KEY, JSON.stringify(choice));
+}
+function loadAgentChoice(): AgentChoice {
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(AGENT_CHOICE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as AgentChoice;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+const initialAgentChoice = loadAgentChoice();
+// One-shot: apply the active flow's preferred environment the first time the
+// runner's environment list arrives (the flow opened before it was available).
+let flowEnvSynced = false;
+// While stepping, selection follows the step cursor so the Inspector shows the
+// node that just executed. Cleared by run-to-end/scenario runs.
+let stepFollow = false;
+
+export const useBuilderStore = create<BuilderState>((set, get) => {
+  const snapshotRun = (handle: FlowRun): void => {
+    set({ run: { ...handle.run, nodeStates: { ...handle.run.nodeStates } } });
+  };
+
+  /** Whether the selected environment is protected (writes are expensive there). */
+  const selectedEnvProtected = (): boolean => {
+    const s = get();
+    return s.environments.find((e) => e.name === s.selectedEnvironment)?.protected ?? false;
+  };
+
+  /** Env/safety options for a server run, adding the confirm token when unsafe-on-protected. */
+  const serverRunOptions = (): ServerRunOptions => {
+    const s = get();
+    const needsConfirm = selectedEnvProtected() && !s.safeMode;
+    return {
+      ...(s.selectedEnvironment ? { environment: s.selectedEnvironment } : {}),
+      safeMode: s.safeMode,
+      ...(needsConfirm ? { confirm: s.selectedEnvironment } : {}),
+    };
+  };
+
+  /** One consciously-unsafe run at a time: revert to safe after it finishes. */
+  const revertUnsafeAfterRun = (): void => {
+    if (selectedEnvProtected() && !get().safeMode) {
+      set({ safeMode: true });
+      persistSafeMode(true);
+    }
+  };
+
+  /**
+   * Auto-select the current flow's preferred environment when the runner
+   * offers one, so a prod-targeting flow doesn't silently run against local.
+   * Applied on explicit flow open and once when environments first load; not on
+   * every runner poll, so a manual override mid-session isn't fought.
+   */
+  const applyFlowEnvironment = (): void => {
+    const s = get();
+    const preferred = s.flow.environment;
+    if (!preferred || preferred === s.selectedEnvironment) return;
+    if (!s.environments.some((e) => e.name === preferred)) return;
+    get().selectEnvironment(preferred);
+  };
+
+  // Selection follows the step cursor: pick the most recently completed node.
+  const selectLatestCompleted = () => {
+    const states = Object.entries(get().run?.nodeStates ?? {});
+    let latest: string | null = null;
+    let latestAt = '';
+    for (const [id, st] of states) {
+      if ((st.status === 'succeeded' || st.status === 'failed') && st.completedAt && st.completedAt >= latestAt) {
+        latestAt = st.completedAt;
+        latest = id;
+      }
+    }
+    if (latest) set({ selectedNodeId: latest });
+  };
+
+  /**
+   * Browser-side Subflow runner. Resolves the child workflow across the active
+   * flow + shelf, runs it to completion on the same registry (browser env:
+   * empty secrets/vars, honouring safe mode), forwards its logs into the parent
+   * stream (prefixed), and returns its collected Result output. The ancestry
+   * chain — threaded through this closure, not global state — enforces the
+   * depth cap and catches A→B→A cycles.
+   */
+  const makeSubflowRunner = (
+    ancestry: string[],
+  ): NonNullable<StartRunOptions['subflowRunner']> => {
+    return async (workflowId, input, callerNodeId): Promise<SubflowResult> => {
+      const guard = subflowGuardError(ancestry, workflowId);
+      if (guard) return { status: 'failed', error: guard };
+      const s = get();
+      const childFlow = [s.flow, ...s.shelf].find((f) => f.id === workflowId);
+      if (!childFlow) return { status: 'failed', error: `Unknown workflow: ${workflowId}` };
+      try {
+        const handle = startRun({
+          flow: childFlow,
+          registry: s.registry,
+          trace: s.trace,
+          pins: pinsOf(childFlow),
+          input,
+          environment: 'browser',
+          safeMode: s.safeMode,
+          subflowRunner: makeSubflowRunner([...ancestry, workflowId]),
+          events: {
+            onLog: (line) =>
+              set((st) => ({
+                logs: [...st.logs, prefixSubflowLog(line, childFlow.name, callerNodeId)],
+              })),
+          },
+        });
+        const childRun = await handle.runToEnd();
+        if (childRun.status !== 'succeeded') {
+          return { status: 'failed', error: `subflow "${childFlow.name}" ${childRun.status}` };
+        }
+        return { status: 'succeeded', output: runOutput(childRun, childFlow) };
+      } catch (err) {
+        return { status: 'failed', error: err instanceof Error ? err.message : String(err) };
+      }
+    };
+  };
+
+  const ensureRun = (
+    input?: Record<string, unknown>,
+    scenarioMocks?: Record<string, unknown>,
+  ): FlowRun | null => {
+    const existing = get().activeRun;
+    if (existing && existing.run.status === 'running') return existing;
+    const mockRun = get().runnerMock;
+    set({ activeRunMock: mockRun });
+    try {
+      const handle = startRun({
+        flow: get().flow,
+        registry: get().registry,
+        trace: get().trace,
+        pins: pinsOf(get().flow),
+        input,
+        // Browser-engine runs honour Mock mode the same way the runner does:
+        // op-level mocks under any scenario's own map, fail-loud at infra.
+        ...(mockRun ? { mockRun: true, mocks: { ...get().flow.mocks, ...scenarioMocks } } : {}),
+        // Browser execution has no env file: it runs as environment 'browser'
+        // (empty secrets/vars) but still honours safe mode over HTTP.
+        environment: 'browser',
+        safeMode: get().safeMode,
+        subflowRunner: makeSubflowRunner([get().flow.id]),
+        events: {
+          onNodeStateChange: () => snapshotRun(handle),
+          onLog: (line) => set((s) => ({ logs: [...s.logs, line] })),
+          onRunFinished: () => {
+            snapshotRun(handle);
+            get().recordRun({ ...handle.run, nodeStates: { ...handle.run.nodeStates } });
+            set({ activeRun: null });
+            revertUnsafeAfterRun();
+          },
+        },
+      });
+      set({ activeRun: handle, logs: [] });
+      snapshotRun(handle);
+      return handle;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set((s) => ({
+        logs: [
+          ...s.logs,
+          {
+            timestamp: new Date().toISOString(),
+            level: 'error',
+            runId: 'validation',
+            message,
+          },
+        ],
+      }));
+      return null;
+    }
+  };
+
+  const reportRunError = (message: string): void => {
+    set((s) => ({
+      logs: [
+        ...s.logs,
+        { timestamp: new Date().toISOString(), level: 'error', runId: 'runner', message },
+      ],
+    }));
+  };
+
+  /** Start a server-side run (if none live) and wire its SSE events into the store. */
+  const ensureServerRun = async (
+    mode: 'run' | 'step',
+    input?: Record<string, unknown>,
+    scenarioName?: string,
+  ): Promise<string | null> => {
+    const existing = get().activeServerRunId;
+    if (existing) return existing;
+    const flow = get().flow;
+    // Remember whether this run executed against mocks — the history entry is
+    // tagged so a mocked run is never mistaken for a real one later.
+    set({ activeRunMock: get().runnerMock });
+    try {
+      const runId = await startServerRun(flow, mode, pinsOf(flow), input, {
+        ...serverRunOptions(),
+        ...(scenarioName ? { scenarioName } : {}),
+      });
+      const initial: WorkflowRun = {
+        id: runId,
+        workflowId: flow.id,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        nodeStates: Object.fromEntries(flow.nodes.map((n) => [n.id, { status: 'queued' as const }])),
+      };
+      set({ activeServerRunId: runId, run: initial, logs: [] });
+      subscribeServerRun(runId, {
+        onNodeState: (nodeId, state) => {
+          set((s) => {
+            if (!s.run || s.run.id !== runId) return {};
+            const follow =
+              stepFollow && (state.status === 'succeeded' || state.status === 'failed')
+                ? { selectedNodeId: nodeId }
+                : {};
+            return { run: { ...s.run, nodeStates: { ...s.run.nodeStates, [nodeId]: state } }, ...follow };
+          });
+        },
+        onLog: (line) => set((s) => ({ logs: [...s.logs, line] })),
+        onFinished: (run, errorHandler) => {
+          set({ run });
+          get().recordRun(run, errorHandler);
+          set({ activeServerRunId: null });
+          revertUnsafeAfterRun();
+        },
+        onError: (message) => {
+          reportRunError(message);
+          set({ activeServerRunId: null });
+        },
+      });
+      return runId;
+    } catch (err) {
+      reportRunError(err instanceof Error ? err.message : String(err));
+      return null;
+    }
+  };
+
+  return {
+    flow: initialFlow,
+    shelf: initialShelf,
+    workflows: summaries(initialFlow, initialShelf),
+    opMeta: new Map(),
+    registry,
+    trace: new InMemoryTraceSink(),
+    run: null,
+    logs: [],
+    selectedNodeId: null,
+    activeRun: null,
+    dockTab: 'logs',
+    sidebarOpen: loadPanel(SIDEBAR_KEY),
+    dockOpen: loadPanel(DOCK_KEY),
+    inspectorOpen: loadPanel(INSPECTOR_KEY),
+    agentPanelOpen: false,
+    agentEnvSetup: false,
+    welcomeOpen: false,
+    settingsOpen: false,
+    viewRegister: initialViewRegister,
+    consolePosition: initialConsolePosition,
+    runConsoleDismissedId: null,
+    runConsoleOpenedIds: new Set(),
+    runHistory: [],
+    logsByRun: {},
+    activeScenarioId: null,
+    scenarioTestReports: {},
+    activeRunMock: false,
+    scenarioTestPending: null,
+    agentRun: null,
+    buildingOperationId: null,
+    agentChoice: initialAgentChoice,
+    setAgentChoice(choice) {
+      set({ agentChoice: choice });
+      persistAgentChoice(choice);
+    },
+    executionMode: (() => {
+      const saved =
+        typeof localStorage !== 'undefined' ? localStorage.getItem('emberflow.mode') : null;
+      return saved === 'browser' || saved === 'server' ? saved : 'auto';
+    })(),
+    runnerOnline: null,
+    runnerMock: false,
+    workspaceSource: 'local',
+    activeServerRunId: null,
+    stepMode: false,
+    environments: [],
+    environmentsDefault: '',
+    selectedEnvironment: initialSelectedEnvironment,
+    safeMode: initialSafeMode,
+
+    setDockTab(tab) {
+      set({ dockTab: tab });
+    },
+
+    async fetchEnvironments() {
+      const list = await listEnvironments();
+      if (!list) {
+        set({ environments: [], environmentsDefault: '' });
+        return;
+      }
+      // A runner with no environments file synthesizes a bare "local" env —
+      // that's "no environments yet" to the user, not a real choice: hide it
+      // so the dropdown shows the zero-environment onboarding state. Also
+      // drop any selection persisted from another project — a phantom "dev"
+      // chip in the status bar would claim an environment that doesn't exist.
+      if (list.configured === false) {
+        set({ environments: [], environmentsDefault: '', selectedEnvironment: '' });
+        return;
+      }
+      set({ environments: list.environments, environmentsDefault: list.defaultEnvironment });
+      // Reconcile the persisted selection against what the runner actually offers.
+      const s = get();
+      const known = list.environments.some((e) => e.name === s.selectedEnvironment);
+      if (!known || !s.selectedEnvironment) {
+        get().selectEnvironment(list.defaultEnvironment);
+      } else {
+        // A protected selection always implies safe mode on load.
+        const env = list.environments.find((e) => e.name === s.selectedEnvironment);
+        if (env?.protected && !s.safeMode) {
+          set({ safeMode: true });
+          persistSafeMode(true);
+        }
+      }
+      // First time the environments land, honor the active flow's preference
+      // (the flow was opened before the runner list was available).
+      if (!flowEnvSynced) {
+        flowEnvSynced = true;
+        applyFlowEnvironment();
+      }
+    },
+
+    selectEnvironment(name) {
+      const env = get().environments.find((e) => e.name === name);
+      set({ selectedEnvironment: name });
+      persistEnvironment(name);
+      // Protected environments force safe mode on selection.
+      if (env?.protected) {
+        set({ safeMode: true });
+        persistSafeMode(true);
+      }
+    },
+
+    async loginEnvironment(name) {
+      await loginEnvironmentOnServer(name);
+      await get().fetchEnvironments();
+    },
+
+    async setEnvironmentSecret(name, key, value) {
+      await setEnvironmentSecretOnServer(name, key, value);
+      await get().fetchEnvironments();
+    },
+
+    async deleteEnvironmentSecret(name, key) {
+      await deleteEnvironmentSecretOnServer(name, key);
+      await get().fetchEnvironments();
+    },
+
+    async setEnvironmentAuth(name, auth) {
+      await setEnvironmentAuthOnServer(name, auth);
+      await get().fetchEnvironments();
+    },
+
+    setSafeMode(on, confirmName) {
+      // Disabling safe mode on a protected env demands the typed-back env name.
+      if (!on && selectedEnvProtected() && confirmName !== get().selectedEnvironment) {
+        return false;
+      }
+      set({ safeMode: on });
+      persistSafeMode(on);
+      return true;
+    },
+
+    setExecutionMode(mode) {
+      set({ executionMode: mode });
+      if (typeof localStorage !== 'undefined') localStorage.setItem('emberflow.mode', mode);
+      if (mode !== 'browser') void get().checkRunner();
+    },
+
+    effectiveMode() {
+      const s = get();
+      if (s.executionMode === 'auto') return s.runnerOnline ? 'server' : 'browser';
+      return s.executionMode;
+    },
+
+    async setServingMode(mode) {
+      await setServingModeOnServer(mode);
+      await get().checkRunner();
+    },
+
+    async checkRunner() {
+      const was = get().runnerOnline;
+      const { online, mock } = await runnerHealthy();
+      set({ runnerOnline: online, runnerMock: mock });
+      // Environments live on the runner; refresh alongside the health check.
+      if (online) await get().fetchEnvironments();
+      else set({ environments: [], environmentsDefault: '' });
+      // One-shot adoption: when the runner first comes online and we're still
+      // showing the local workspace, replace it with the runner's files.
+      if (online && was !== true && get().workspaceSource === 'local') {
+        await get().syncFromRunner();
+      }
+    },
+
+    async syncNodeMeta() {
+      const meta = await fetchNodeMeta();
+      if (meta.length === 0) return;
+      const registry = get().registry;
+      for (const m of meta) {
+        const { source, ...definition } = m;
+        registry.registerDefinition(definition, source);
+      }
+      // Force palette/inspector consumers to re-read the registry: a new
+      // top-level reference (Zustand uses Object.is) sharing the same node data.
+      set({ registry: registry.withSameNodes() });
+    },
+
+    async syncFromRunner() {
+      const payload = await fetchWorkflows();
+      if (!payload || payload.flows.length === 0) return;
+      const { flows, operations } = payload;
+      const opMeta: OpMeta = new Map(
+        operations.map((op) => [op.id, { path: op.path, http: op.http }]),
+      );
+      const current = get().flow.id;
+      const flow = flows.find((f) => f.id === current) ?? flows[0];
+      const shelf = flows.filter((f) => f.id !== flow.id);
+      hydrating(() =>
+        set({
+          flow,
+          shelf,
+          opMeta,
+          workflows: summaries(flow, shelf, opMeta),
+          workspaceSource: 'server',
+          run: null,
+          logs: [],
+          activeRun: null,
+          selectedNodeId: null,
+        }),
+      );
+    },
+
+    async createOperation(input) {
+      const { api, folder, name, method, httpPath } = input;
+      const id = `${api}/${folder ? `${folder}/` : ''}${slug(name)}`;
+      const now = new Date().toISOString();
+      const inputNode: WorkflowNode = {
+        id: 'input',
+        type: 'Input',
+        label: 'Input',
+        position: { x: 0, y: 0 },
+        config: {},
+      };
+      const nodes: WorkflowNode[] = [inputNode];
+      const edges: WorkflowDefinition['edges'] = [];
+      if (method) {
+        const responseNode: WorkflowNode = {
+          id: 'response',
+          type: 'Response',
+          label: 'Response',
+          position: { x: 320, y: 0 },
+          config: {},
+        };
+        nodes.push(responseNode);
+        edges.push({ id: crypto.randomUUID(), source: 'input', target: 'response' });
+      }
+      const flow: WorkflowDefinition = {
+        id,
+        name,
+        version: 1,
+        nodes,
+        edges,
+        createdAt: now,
+        updatedAt: now,
+        ...(method && httpPath ? { http: { method, path: httpPath } } : {}),
+      };
+      const result = await createOperationOnServer(flow, id);
+      if (!result.ok) return result;
+      await get().syncFromRunner();
+      get().switchWorkflow(id);
+      return result;
+    },
+
+    async deleteOperations(ids) {
+      if (ids.length === 0) return { ok: true };
+      for (const id of ids) {
+        const result = await deleteWorkflowOnServer(id);
+        if (!result.ok) return result;
+      }
+      // Re-sync from the runner; if the open flow was deleted, syncFromRunner
+      // falls back to another flow (or leaves state as-is if none remain).
+      await get().syncFromRunner();
+      return { ok: true };
+    },
+
+    async createAndBuild(input) {
+      const { location, name, method, httpPath, goal } = input;
+      const parts = location.split('/').filter(Boolean);
+      const api = parts[0] || 'default';
+      const folder = parts.slice(1).join('/') || undefined;
+      // 1) Create the stub op (Input → Response + http trigger) and select it,
+      //    so the canvas shows the shell of what's being built right away.
+      const created = await get().createOperation({ api, folder, name, method, httpPath });
+      if (!created.ok) return created;
+      const stubId = `${api}/${folder ? `${folder}/` : ''}${slug(name)}`;
+      // 2) Flag the holding pattern, then hand the stub to the agent. Send the
+      //    user's goal verbatim (it shows as their message in the panel); the
+      //    edit-flow prompt already tells the agent to build the operation out.
+      set({ buildingOperationId: stubId });
+      // scaffold: this op is a placeholder-named shell — the agent's first step
+      // is to rename it properly, then build it out (see the edit-flow prompt).
+      void get().runAgent({ action: 'edit-flow', flowId: stubId, instruction: goal, scaffold: true });
+      return { ok: true };
+    },
+
+    async runAgent(intent, opts) {
+      const effectiveOpts = opts ?? get().agentChoice;
+      // If a build is in flight, remember the op being built + the op ids that
+      // existed before the run. If the agent renames the op (the id changes),
+      // syncFromRunner can't find the old id and falls back to flows[0], leaving
+      // the built op unselected — so we re-select the newly-added op on finish.
+      const buildingId = get().buildingOperationId;
+      const priorIds = buildingId
+        ? new Set([get().flow.id, ...get().shelf.map((f) => f.id)])
+        : null;
+      let agentRunId: string;
+      try {
+        agentRunId = await startAgent(intent, effectiveOpts);
+      } catch (err) {
+        set({
+          agentRun: {
+            id: '',
+            events: [{ type: 'error', text: err instanceof Error ? err.message : String(err) }],
+            status: 'error',
+          },
+          // Open the panel so the failure is visible — without this, a start
+          // error (e.g. no agent CLI on PATH) lands in a closed panel and the
+          // click appears to do nothing.
+          agentPanelOpen: true,
+        });
+        return;
+      }
+
+      set({
+        agentRun: { id: agentRunId, events: [], status: 'running', instruction: intent.instruction },
+        agentPanelOpen: true,
+      });
+
+      // Live canvas: while the agent works, poll the runner (GET /workflows reads
+      // disk fresh) so the open operation reflects the agent's edits AS THEY LAND
+      // — not only at the end. Preserves run/logs/selection (unlike syncFromRunner)
+      // and follows a mid-run rename. Partial reads throw and are swallowed; the
+      // next tick recovers.
+      let livePoll: ReturnType<typeof setInterval> | undefined;
+      const pollOnce = async (): Promise<void> => {
+        try {
+          const payload = await fetchWorkflows();
+          if (!payload || payload.flows.length === 0) return;
+          const { flows, operations } = payload;
+          const opMeta: OpMeta = new Map(operations.map((op) => [op.id, { path: op.path, http: op.http }]));
+          const currentId = get().flow.id;
+          let flow = flows.find((f) => f.id === currentId);
+          // Rename mid-run: the open id is gone — follow the op that's new since
+          // the run started (the rename target).
+          if (!flow && priorIds) flow = flows.find((f) => !priorIds.has(f.id));
+          if (!flow) return;
+          const shelf = flows.filter((f) => f.id !== flow.id);
+          hydrating(() =>
+            set({ flow, shelf, opMeta, workflows: summaries(flow, shelf, opMeta) }),
+          );
+          // Once real nodes appear (beyond the Input→terminus stub), drop the
+          // holding pattern so the live canvas shows instead of "waiting…".
+          if (get().buildingOperationId && flow.nodes.length > 2) set({ buildingOperationId: null });
+        } catch {
+          // transient (partial read / runner blip) — next tick recovers
+        }
+      };
+      const stopPoll = (): void => {
+        if (livePoll) {
+          clearInterval(livePoll);
+          livePoll = undefined;
+        }
+      };
+      livePoll = setInterval(() => void pollOnce(), 2000);
+
+      const finish = async (status: 'done' | 'error') => {
+        stopPoll();
+        set((s) => (s.agentRun && s.agentRun.id === agentRunId ? { agentRun: { ...s.agentRun, status } } : {}));
+        // The build (if any) is over — drop the canvas holding pattern.
+        set({ buildingOperationId: null });
+        if (status === 'done') {
+          // Reload the flow the agent just edited so the canvas shows the change
+          // live — the whole point is watching your instruction take effect.
+          // Also refresh runner health/environments immediately: setup-auth and
+          // setup-environments runs change the env list, and waiting out the
+          // 10s poll makes the dropdown look broken right after "done".
+          void get().checkRunner();
+          try {
+            await get().syncFromRunner();
+            // Keep the built op selected even if the agent renamed it: if the
+            // id we were building is gone, select whichever op is new since the
+            // run started (the rename target).
+            if (buildingId && get().flow.id !== buildingId) {
+              const added = [get().flow, ...get().shelf].find((f) => priorIds && !priorIds.has(f.id));
+              if (added) get().switchWorkflow(added.id);
+            }
+          } catch {
+            // reload best-effort — the diff below still shows what changed
+          }
+          try {
+            const { diff, files } = await fetchAgentDiff(agentRunId);
+            set((s) => (s.agentRun && s.agentRun.id === agentRunId ? { agentRun: { ...s.agentRun, diff, files } } : {}));
+          } catch {
+            // Diff fetch failure isn't fatal — the console still shows the event stream.
+          }
+        }
+      };
+
+      streamAgent(agentRunId, (event) => {
+        set((s) =>
+          s.agentRun && s.agentRun.id === agentRunId
+            ? { agentRun: { ...s.agentRun, events: [...s.agentRun.events, event] } }
+            : {},
+        );
+        if (event.type === 'done') void finish('done');
+        else if (event.type === 'error') void finish('error');
+      });
+    },
+
+    async revertAgentRun() {
+      const agentRun = get().agentRun;
+      if (!agentRun) return;
+      await revertAgent(agentRun.id);
+      // The diff is now stale (files restored) — clear it so the panel stops
+      // showing the old diff + a live Revert button.
+      set((s) =>
+        s.agentRun && s.agentRun.id === agentRun.id
+          ? { agentRun: { ...s.agentRun, diff: undefined, files: undefined } }
+          : {},
+      );
+      await get().syncFromRunner();
+    },
+
+    dismissAgentRun() {
+      const agentRun = get().agentRun;
+      if (agentRun && agentRun.status === 'running') void cancelAgent(agentRun.id);
+      set({ agentRun: null });
+    },
+
+    toggleSidebar() {
+      set((s) => {
+        const open = !s.sidebarOpen;
+        persistPanel(SIDEBAR_KEY, open);
+        return { sidebarOpen: open };
+      });
+    },
+
+    toggleDock() {
+      set((s) => {
+        const open = !s.dockOpen;
+        persistPanel(DOCK_KEY, open);
+        return { dockOpen: open };
+      });
+    },
+
+    toggleInspector() {
+      set((s) => {
+        const open = !s.inspectorOpen;
+        persistPanel(INSPECTOR_KEY, open);
+        return { inspectorOpen: open };
+      });
+    },
+
+    beginEnvironmentSetup() {
+      set({ agentPanelOpen: true, agentEnvSetup: true });
+    },
+
+    beginInfrastructureScout() {
+      void get().runAgent({
+        action: 'scout-infrastructure',
+        instruction:
+          "Scan this project's dependencies, config files, ORM schemas, env-var references and HTTP clients, and write emberflow/infrastructure.json describing the databases, APIs and providers it already uses.",
+      });
+    },
+
+    setWelcomeOpen(open) {
+      set({ welcomeOpen: open });
+    },
+
+    setSettingsOpen(open) {
+      set({ settingsOpen: open });
+    },
+
+    openAgentPanel() {
+      set({ agentPanelOpen: true });
+    },
+
+    toggleAgentPanel() {
+      // Closing the panel leaves environment-setup mode — reopening it later
+      // should be about the open operation again.
+      set((s) => ({ agentPanelOpen: !s.agentPanelOpen, ...(s.agentPanelOpen ? { agentEnvSetup: false } : {}) }));
+    },
+
+    setViewRegister(register) {
+      set({ viewRegister: register });
+      if (typeof localStorage !== 'undefined') localStorage.setItem(REGISTER_KEY, register);
+    },
+
+    setConsolePosition(position) {
+      set({ consolePosition: position });
+      if (typeof localStorage !== 'undefined') localStorage.setItem(CONSOLE_POSITION_KEY, position);
+    },
+
+    dismissRunConsole() {
+      set({ runConsoleDismissedId: get().run?.id ?? null });
+    },
+
+    reopenRunConsole() {
+      set((s) => {
+        const runId = s.run?.id;
+        const runConsoleOpenedIds = runId
+          ? new Set(s.runConsoleOpenedIds).add(runId)
+          : s.runConsoleOpenedIds;
+        return { runConsoleDismissedId: null, runConsoleOpenedIds };
+      });
+    },
+
+    recordRun(run, errorHandler) {
+      set((s) => {
+        const scenario = s.activeScenarioId
+          ? s.flow.scenarios?.find((sc) => sc.id === s.activeScenarioId)
+          : undefined;
+        const entry: RunHistoryEntry = {
+          ...run,
+          ...(scenario ? { scenarioName: scenario.name } : {}),
+          ...(errorHandler ? { errorHandler } : {}),
+          ...(s.activeRunMock ? { mock: true } : {}),
+        };
+        return {
+          runHistory: [entry, ...s.runHistory].slice(0, 50),
+          logsByRun: { ...s.logsByRun, [run.id]: s.logs },
+        };
+      });
+    },
+
+    viewRun(runId) {
+      const entry = get().runHistory.find((r) => r.id === runId);
+      if (entry) {
+        set((s) => ({ run: entry, logs: s.logsByRun[runId] ?? [], activeRun: null }));
+      }
+    },
+
+    createWorkflow() {
+      const flow = emptyFlow();
+      set((s) => {
+        const shelf = [...s.shelf, s.flow];
+        return {
+          flow,
+          shelf,
+          workflows: summaries(flow, shelf, s.opMeta),
+          run: null,
+          logs: [],
+          activeRun: null,
+          selectedNodeId: null,
+        };
+      });
+      revertUnsafeAfterRun();
+    },
+
+    moveWorkflowToFolder(id, folder) {
+      set((s) => {
+        const assign = (f: WorkflowDefinition): WorkflowDefinition => {
+          if (f.id !== id) return f;
+          const next = { ...f };
+          if (folder) next.folder = folder;
+          else delete next.folder;
+          return next;
+        };
+        const flow = assign(s.flow);
+        const shelf = s.shelf.map(assign);
+        return { flow, shelf, workflows: summaries(flow, shelf, s.opMeta) };
+      });
+    },
+
+    switchWorkflow(id) {
+      let switched = false;
+      set((s) => {
+        if (s.flow.id === id) return {};
+        const target = s.shelf.find((f) => f.id === id);
+        if (!target) return {};
+        switched = true;
+        const shelf = [...s.shelf.filter((f) => f.id !== id), s.flow];
+        return {
+          flow: target,
+          shelf,
+          workflows: summaries(target, shelf, s.opMeta),
+          run: null,
+          logs: [],
+          activeRun: null,
+          selectedNodeId: null,
+        };
+      });
+      // Switching flows ends any consciously-unsafe session, then honors the
+      // newly-opened flow's preferred environment (if any).
+      if (switched) {
+        revertUnsafeAfterRun();
+        applyFlowEnvironment();
+      }
+    },
+
+    addNode(type, position) {
+      const definition = get().registry.get(type).definition;
+      set((s) => ({
+        flow: touched({
+          ...s.flow,
+          nodes: [
+            ...s.flow.nodes,
+            { id: crypto.randomUUID(), type, label: definition.label, position, config: {} },
+          ],
+        }),
+      }));
+    },
+
+    moveNode(id, position) {
+      set((s) => ({
+        flow: {
+          ...s.flow,
+          nodes: s.flow.nodes.map((n) => (n.id === id ? { ...n, position } : n)),
+        },
+      }));
+    },
+
+    resizeNode(id, size) {
+      // Layout-only, like moveNode: no updatedAt bump on every drag tick.
+      set((s) => ({
+        flow: {
+          ...s.flow,
+          nodes: s.flow.nodes.map((n) =>
+            n.id === id ? { ...n, metadata: { ...n.metadata, size } } : n,
+          ),
+        },
+      }));
+    },
+
+    removeNode(id) {
+      set((s) => ({
+        flow: touched({
+          ...s.flow,
+          nodes: s.flow.nodes.filter((n) => n.id !== id),
+          edges: s.flow.edges.filter((e) => e.source !== id && e.target !== id),
+        }),
+        selectedNodeId: s.selectedNodeId === id ? null : s.selectedNodeId,
+      }));
+    },
+
+    removeEdge(id) {
+      set((s) => {
+        const edge = s.flow.edges.find((e) => e.id === id);
+        let nodes = s.flow.nodes;
+        // A field edge carries a mapping; deleting the edge deletes the mapping.
+        if (edge?.targetHandle) {
+          nodes = nodes.map((n) => {
+            if (n.id !== edge.target) return n;
+            const mapping = n.inputMap?.[edge.targetHandle!];
+            if (!mapping || mapping.sourceNodeId !== edge.source) return n;
+            const inputMap = { ...n.inputMap };
+            delete inputMap[edge.targetHandle!];
+            return { ...n, inputMap };
+          });
+        }
+        return {
+          flow: touched({ ...s.flow, nodes, edges: s.flow.edges.filter((e) => e.id !== id) }),
+        };
+      });
+    },
+
+    // connect/removeNode/moveNode/resizeNode: the runbook view has no
+    // authoring surface today (it's read-only, projection-driven). These
+    // stay for the file/agent authoring path — flows are built by editing
+    // workflow JSON or via agent tooling that calls this store directly —
+    // and for the canvas-based editing surface planned for later.
+    connect(source, target, targetHandle, sourceHandle) {
+      set((s) => {
+        let nodes = s.flow.nodes;
+        if (targetHandle) {
+          nodes = nodes.map((n) =>
+            n.id === target
+              ? {
+                  ...n,
+                  inputMap: {
+                    ...n.inputMap,
+                    [targetHandle]: { sourceNodeId: source, sourceField: '$' },
+                  },
+                }
+              : n,
+          );
+        }
+        return {
+          flow: touched({
+            ...s.flow,
+            nodes,
+            edges: [
+              ...s.flow.edges,
+              { id: crypto.randomUUID(), source, target, targetHandle, sourceHandle },
+            ],
+          }),
+        };
+      });
+    },
+
+    selectNode(id) {
+      // Selecting a node always surfaces the Inspector — a click that lands
+      // nowhere visible reads as a dead click. Deselection leaves panels alone.
+      if (id !== null && !get().inspectorOpen) {
+        set({ selectedNodeId: id, inspectorOpen: true });
+        persistPanel(INSPECTOR_KEY, true);
+        return;
+      }
+      set({ selectedNodeId: id });
+    },
+
+    renameFlow(name) {
+      set((s) => {
+        const flow = touched({ ...s.flow, name });
+        return { flow, workflows: summaries(flow, s.shelf, s.opMeta) };
+      });
+    },
+
+    setFlowHttp(http) {
+      set((s) => {
+        const flow = touched({ ...s.flow, http });
+        return { flow, workflows: summaries(flow, s.shelf, s.opMeta) };
+      });
+    },
+
+    renameNode(id, label) {
+      set((s) => ({
+        flow: touched({
+          ...s.flow,
+          nodes: s.flow.nodes.map((n) => (n.id === id ? { ...n, label } : n)),
+        }),
+      }));
+    },
+
+    updateNodeConfig(id, key, value) {
+      set((s) => ({
+        flow: touched({
+          ...s.flow,
+          nodes: s.flow.nodes.map((n) =>
+            n.id === id ? { ...n, config: { ...n.config, [key]: value } } : n,
+          ),
+        }),
+      }));
+    },
+
+    setNodeRetry(id, retry) {
+      set((s) => ({
+        flow: touched({
+          ...s.flow,
+          nodes: s.flow.nodes.map((n) => {
+            if (n.id !== id) return n;
+            const { retry: _drop, ...rest } = n;
+            return retry ? { ...rest, retry } : rest;
+          }),
+        }),
+      }));
+    },
+
+    seedParamDefault(param) {
+      const inputNode = get().flow.nodes.find((n) => n.type === 'Input');
+      if (!inputNode) return;
+      const existingDefaults = (inputNode.config?.defaults as Record<string, unknown> | undefined) ?? {};
+      const existingParams =
+        (existingDefaults.params as Record<string, unknown> | undefined) ?? {};
+      if (existingParams[param] !== undefined) return;
+      set((s) => ({
+        flow: touched({
+          ...s.flow,
+          nodes: s.flow.nodes.map((n) =>
+            n.id === inputNode.id
+              ? {
+                  ...n,
+                  config: {
+                    ...n.config,
+                    defaults: {
+                      ...existingDefaults,
+                      params: { ...existingParams, [param]: '' },
+                    },
+                  },
+                }
+              : n,
+          ),
+        }),
+      }));
+      get().saveFlow();
+    },
+
+    setInputMapping(nodeId, field, mapping) {
+      set((s) => ({
+        flow: touched({
+          ...s.flow,
+          nodes: s.flow.nodes.map((n) => {
+            if (n.id !== nodeId) return n;
+            const inputMap = { ...n.inputMap };
+            if (mapping) inputMap[field] = mapping;
+            else delete inputMap[field];
+            return { ...n, inputMap };
+          }),
+        }),
+      }));
+    },
+
+    pinNodeOutput(nodeId, output) {
+      set((s) => ({
+        flow: touched({
+          ...s.flow,
+          nodes: s.flow.nodes.map((n) =>
+            n.id === nodeId
+              ? { ...n, metadata: { ...n.metadata, pinnedOutput: output } }
+              : n,
+          ),
+        }),
+      }));
+    },
+
+    unpinNode(nodeId) {
+      set((s) => ({
+        flow: touched({
+          ...s.flow,
+          nodes: s.flow.nodes.map((n) => {
+            if (n.id !== nodeId || !n.metadata || !('pinnedOutput' in n.metadata)) return n;
+            const metadata = { ...n.metadata };
+            delete metadata.pinnedOutput;
+            if (Object.keys(metadata).length === 0) {
+              const { metadata: _dropped, ...rest } = n;
+              return rest;
+            }
+            return { ...n, metadata };
+          }),
+        }),
+      }));
+    },
+
+    async runNodeIsolated(nodeId, input) {
+      const s = get();
+      const node = s.flow.nodes.find((n) => n.id === nodeId);
+      if (!node) return { error: `Unknown node: ${nodeId}`, logs: [] };
+      if (!s.registry.has(node.type)) {
+        return { error: `Unknown node type: ${node.type}`, logs: [] };
+      }
+      const { implementation } = s.registry.get(node.type);
+      const logs: LogLine[] = [];
+      const runId = `isolated-${crypto.randomUUID().slice(0, 8)}`;
+      const log = (level: LogLine['level'], message: string): void => {
+        logs.push({
+          timestamp: new Date().toISOString(),
+          level,
+          runId,
+          nodeId: node.id,
+          nodeLabel: node.label,
+          message,
+        });
+      };
+      const startedAt = new Date().toISOString();
+      const sample = (status: 'succeeded' | 'failed', output?: unknown) => {
+        s.trace.record({
+          id: crypto.randomUUID(),
+          workflowId: s.flow.id,
+          runId,
+          nodeId: node.id,
+          nodeType: node.type,
+          nodeLabel: node.label,
+          input,
+          output,
+          status,
+          startedAt,
+          completedAt: new Date().toISOString(),
+        });
+      };
+      try {
+        const output = await implementation({
+          input,
+          config: node.config,
+          secrets: {},
+          vars: {},
+          safeMode: false,
+          runInput: {},
+          log,
+          runSubflow: (workflowId, subInput) =>
+            makeSubflowRunner([s.flow.id])(workflowId, subInput, node.id),
+        });
+        sample('succeeded', output);
+        return { output, logs };
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        sample('failed');
+        return { error, logs };
+      }
+    },
+
+    async testWorkflow(flowId, environment) {
+      set({ scenarioTestPending: flowId });
+      try {
+        const report = await testWorkflowOnServer(flowId, environment);
+        set((s) => ({
+          scenarioTestReports: { ...s.scenarioTestReports, [flowId]: report },
+        }));
+      } finally {
+        set((s) => (s.scenarioTestPending === flowId ? { scenarioTestPending: null } : {}));
+      }
+    },
+
+    async runScenario(scenarioId) {
+      const scenario = get().flow.scenarios?.find((sc) => sc.id === scenarioId);
+      if (!scenario) return;
+      stepFollow = false;
+      get().resetRun();
+      set({ stepMode: false });
+      set({ activeScenarioId: scenarioId });
+      if (get().effectiveMode() === 'server') {
+        await ensureServerRun('run', scenario.input, scenario.name);
+        return;
+      }
+      const handle = ensureRun(scenario.input, scenario.mocks);
+      if (handle) await handle.runToEnd();
+    },
+
+    async stepScenario(scenarioId) {
+      const scenario = get().flow.scenarios?.find((sc) => sc.id === scenarioId);
+      if (!scenario) return;
+      stepFollow = true;
+      get().resetRun();
+      set({ stepMode: true });
+      set({ activeScenarioId: scenarioId });
+      if (get().effectiveMode() === 'server') {
+        const runId = await ensureServerRun('step', scenario.input, scenario.name);
+        if (runId) {
+          try {
+            const done = await stepServerRun(runId);
+            if (done) set({ activeServerRunId: null });
+          } catch (err) {
+            reportRunError(err instanceof Error ? err.message : String(err));
+          }
+        }
+        return;
+      }
+      const handle = ensureRun(scenario.input, scenario.mocks);
+      if (handle) {
+        await handle.step();
+        selectLatestCompleted();
+      }
+    },
+
+    addScenario(name, input, description, expect) {
+      const scenario: ScenarioDefinition = {
+        id: crypto.randomUUID(),
+        name,
+        ...(description ? { description } : {}),
+        input,
+        ...(expect ? { expect } : {}),
+      };
+      set((s) => ({
+        flow: touched({ ...s.flow, scenarios: [...(s.flow.scenarios ?? []), scenario] }),
+        // A scenario change makes the last test report stale — drop it so the
+        // panel never shows a ✓/✗ for expectations that no longer exist.
+        scenarioTestReports: dropReport(s.scenarioTestReports, s.flow.id),
+      }));
+    },
+
+    updateScenario(id, patch) {
+      set((s) => ({
+        flow: touched({
+          ...s.flow,
+          scenarios: (s.flow.scenarios ?? []).map((sc) =>
+            sc.id === id ? { ...sc, ...patch } : sc,
+          ),
+        }),
+        scenarioTestReports: dropReport(s.scenarioTestReports, s.flow.id),
+      }));
+    },
+
+    removeScenario(id) {
+      set((s) => {
+        const scenarios = (s.flow.scenarios ?? []).filter((sc) => sc.id !== id);
+        const flow = { ...s.flow };
+        if (scenarios.length > 0) flow.scenarios = scenarios;
+        else delete flow.scenarios;
+        return {
+          flow: touched(flow),
+          scenarioTestReports: dropReport(s.scenarioTestReports, s.flow.id),
+        };
+      });
+    },
+
+    async stepRun() {
+      // A plain step/run is not scenario-driven; only tag history for runs
+      // started via runScenario.
+      if (!get().activeRun && !get().activeServerRunId) set({ activeScenarioId: null });
+      stepFollow = true;
+      set({ stepMode: true, runConsoleDismissedId: null });
+      if (get().effectiveMode() === 'server') {
+        const runId = await ensureServerRun('step');
+        if (runId) {
+          try {
+            const done = await stepServerRun(runId);
+            if (done) set({ activeServerRunId: null });
+          } catch (err) {
+            reportRunError(err instanceof Error ? err.message : String(err));
+          }
+        }
+        return;
+      }
+      const handle = ensureRun();
+      if (handle) {
+        await handle.step();
+        selectLatestCompleted();
+      }
+    },
+
+    async runToEnd() {
+      stepFollow = false;
+      set({ stepMode: false, runConsoleDismissedId: null });
+      if (!get().activeRun && !get().activeServerRunId) set({ activeScenarioId: null });
+      if (get().effectiveMode() === 'server') {
+        const existing = get().activeServerRunId;
+        if (existing) {
+          // A stepped run is already live on the runner — walk it to the end.
+          try {
+            let done = false;
+            while (!done) done = await stepServerRun(existing);
+            set({ activeServerRunId: null });
+          } catch (err) {
+            reportRunError(err instanceof Error ? err.message : String(err));
+          }
+          return;
+        }
+        await ensureServerRun('run');
+        return;
+      }
+      const handle = ensureRun();
+      if (handle) await handle.runToEnd();
+    },
+
+    resetRun() {
+      get().activeRun?.cancel();
+      const serverRunId = get().activeServerRunId;
+      if (serverRunId) void cancelServerRun(serverRunId);
+      // A fresh run clears any prior dismissal so the console re-surfaces —
+      // in technical it auto-opens (useRunConsole), so Run always shows logs.
+      set({ run: null, logs: [], activeRun: null, activeServerRunId: null, stepMode: false, runConsoleDismissedId: null });
+    },
+
+    saveFlow() {
+      const s = get();
+      const flows = [s.flow, ...s.shelf];
+      if (s.workspaceSource === 'server') {
+        // Runner is source of truth: push every flow, keep localStorage as backup.
+        for (const f of flows) void putWorkflow(f);
+      }
+      saveWorkspace({ flows, activeId: s.flow.id });
+    },
+
+    loadFlow() {
+      const ws = loadWorkspace();
+      if (!ws) return;
+      const flow = ws.flows.find((f) => f.id === ws.activeId) ?? ws.flows[0];
+      const shelf = ws.flows.filter((f) => f.id !== flow.id);
+      hydrating(() =>
+        set({
+          flow,
+          shelf,
+          workflows: summaries(flow, shelf, get().opMeta),
+          run: null,
+          logs: [],
+          activeRun: null,
+          selectedNodeId: null,
+        }),
+      );
+    },
+
+    exportFlow() {
+      return serializeFlow(get().flow);
+    },
+
+    importFlow(json) {
+      const imported = parseFlow(json);
+      set((s) => {
+        // Imported flow becomes (or replaces) a workflow and is made active.
+        const shelf = [...s.shelf.filter((f) => f.id !== imported.id), s.flow].filter(
+          (f) => f.id !== imported.id,
+        );
+        return {
+          flow: imported,
+          shelf,
+          workflows: summaries(imported, shelf, s.opMeta),
+          run: null,
+          logs: [],
+          activeRun: null,
+          selectedNodeId: null,
+        };
+      });
+    },
+  };
+});
+
+// Autosave: any flow/shelf change (layout, resize, config, scenarios) persists
+// after a short idle, so nothing is lost to a reload without hitting Save.
+// Changes that merely hydrate the workspace (runner sync, local load) are not
+// edits and must not save — writing them back would echo runner state forever.
+let autosaveTimer: ReturnType<typeof setTimeout> | undefined;
+export let suppressAutosave = false;
+export function hydrating<T>(fn: () => T): T {
+  suppressAutosave = true;
+  try {
+    return fn();
+  } finally {
+    suppressAutosave = false;
+  }
+}
+useBuilderStore.subscribe((state, prev) => {
+  if (suppressAutosave) return;
+  if (state.flow === prev.flow && state.shelf === prev.shelf) return;
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => {
+    // A background tab must not save: two open tabs would take turns
+    // clobbering each other's workspace (last writer wins).
+    if (typeof document !== 'undefined' && !document.hasFocus()) return;
+    useBuilderStore.getState().saveFlow();
+  }, 800);
+});
+
+// Merge consumer-node metadata from the runner (if reachable) into the
+// registry so custom project nodes appear in the palette/inspector.
+void useBuilderStore.getState().syncNodeMeta();

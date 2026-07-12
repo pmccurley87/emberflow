@@ -1,0 +1,163 @@
+{
+  "$artifact": "emberflow/v1",
+  "publishedAt": "2026-07-02T21:36:17.695Z",
+  "inputSchema": [
+    {
+      "name": "points",
+      "type": "number",
+      "required": true
+    },
+    {
+      "name": "spikeIndex",
+      "type": "number"
+    }
+  ],
+  "nodeHashes": {
+    "Input": "80b3898b1647f3da4c64a3602fcba0d21e41e35d5e24d88a5b759273097a2e11",
+    "BuildSeries": "966665253c526a1ba035d1c80564d25607601a8b9ec6fa63e3ea1e6800d902d7",
+    "DetectEntireSeries": "45e35445f4c0209d2751e5387adfaa54a12d568d79b163eeea18485475df8a40",
+    "SummarizeAnomalies": "a5d2efbafddfcfc3e0db8ab781be7b3f7846225cd2f7f151710eb3cdf664e26c",
+    "Result": "8ecb2427e9295a8d9ce2c829f62f88033222bcdddda1b9fe541c97f729671a1d"
+  },
+  "flow": {
+    "id": "detect-prod",
+    "name": "Detect (Production)",
+    "version": 1,
+    "folder": "Ops",
+    "nodes": [
+      {
+        "id": "input",
+        "type": "Input",
+        "label": "Series Request",
+        "position": {
+          "x": 60,
+          "y": 240
+        },
+        "config": {
+          "fields": [
+            {
+              "name": "points",
+              "type": "number",
+              "required": true
+            },
+            {
+              "name": "spikeIndex",
+              "type": "number"
+            }
+          ],
+          "defaults": {
+            "points": 24
+          }
+        }
+      },
+      {
+        "id": "build",
+        "type": "BuildSeries",
+        "label": "Build Series",
+        "position": {
+          "x": 300,
+          "y": 240
+        },
+        "config": {
+          "baseValue": 100,
+          "spikeFactor": 3
+        },
+        "inputMap": {
+          "points": {
+            "sourceNodeId": "input",
+            "sourceField": "points"
+          },
+          "spikeIndex": {
+            "sourceNodeId": "input",
+            "sourceField": "spikeIndex"
+          }
+        }
+      },
+      {
+        "id": "detect",
+        "type": "DetectEntireSeries",
+        "label": "Detect",
+        "position": {
+          "x": 540,
+          "y": 240
+        },
+        "config": {
+          "apiKey": {
+            "$secret": "ANOMALY_API_KEY"
+          },
+          "sensitivity": 80
+        },
+        "inputMap": {
+          "series": {
+            "sourceNodeId": "build",
+            "sourceField": "series"
+          }
+        }
+      },
+      {
+        "id": "summarize",
+        "type": "SummarizeAnomalies",
+        "label": "Summarize",
+        "position": {
+          "x": 780,
+          "y": 240
+        },
+        "config": {},
+        "inputMap": {
+          "isAnomaly": {
+            "sourceNodeId": "detect",
+            "sourceField": "isAnomaly"
+          },
+          "series": {
+            "sourceNodeId": "build",
+            "sourceField": "series"
+          }
+        }
+      },
+      {
+        "id": "result",
+        "type": "Result",
+        "label": "Report",
+        "position": {
+          "x": 1020,
+          "y": 240
+        },
+        "config": {},
+        "inputMap": {
+          "data": {
+            "sourceNodeId": "summarize",
+            "sourceField": "$"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "e1",
+        "source": "input",
+        "target": "build",
+        "targetHandle": "points"
+      },
+      {
+        "id": "e2",
+        "source": "build",
+        "target": "detect",
+        "targetHandle": "series"
+      },
+      {
+        "id": "e3",
+        "source": "detect",
+        "target": "summarize",
+        "targetHandle": "isAnomaly"
+      },
+      {
+        "id": "e4",
+        "source": "summarize",
+        "target": "result",
+        "targetHandle": "data"
+      }
+    ],
+    "createdAt": "2026-07-02T22:00:00Z",
+    "updatedAt": "2026-07-02T22:00:00Z"
+  }
+}

@@ -1,0 +1,131 @@
+import type { WorkflowDefinition, WorkflowEdge, WorkflowNode } from '../engine';
+
+/**
+ * ForEach/Collect loop over a list of cities:
+ *   input(cities) → fe(ForEach) → geocode → forecast → classify → col(Collect) → result
+ *
+ * Each iteration resolves one city, fetches its forecast, and grades it
+ * severe/mild; Collect gathers every iteration's classification into a
+ * single array that the Result node surfaces as the sweep report.
+ */
+export function createCitySweepFlow(): WorkflowDefinition {
+  const nodes: WorkflowNode[] = [
+    {
+      id: 'input',
+      type: 'Input',
+      label: 'Sweep Request',
+      position: { x: -180, y: 240 },
+      config: {
+        fields: [{ name: 'cities', type: 'array', required: true }],
+        defaults: { cities: ['Belfast', 'Valencia', 'Reykjavik'] },
+      },
+    },
+    {
+      id: 'fe',
+      type: 'ForEach',
+      label: 'Each City',
+      position: { x: 60, y: 240 },
+      config: {},
+      inputMap: {
+        items: { sourceNodeId: 'input', sourceField: 'cities' },
+      },
+    },
+    {
+      id: 'geocode',
+      type: 'GeocodeCity',
+      label: 'Geocode City',
+      position: { x: 300, y: 240 },
+      config: {},
+      inputMap: {
+        city: { sourceNodeId: 'fe', sourceField: 'item' },
+      },
+    },
+    {
+      id: 'forecast',
+      type: 'FetchForecast',
+      label: 'Fetch Forecast',
+      position: { x: 540, y: 240 },
+      config: {},
+      inputMap: {
+        latitude: { sourceNodeId: 'geocode', sourceField: 'latitude' },
+        longitude: { sourceNodeId: 'geocode', sourceField: 'longitude' },
+      },
+    },
+    {
+      id: 'classify',
+      type: 'ClassifyWeather',
+      label: 'Classify Weather',
+      position: { x: 780, y: 240 },
+      config: {},
+      inputMap: {
+        windKmh: { sourceNodeId: 'forecast', sourceField: 'windKmh' },
+        rainChancePct: { sourceNodeId: 'forecast', sourceField: 'rainChancePct' },
+        place: { sourceNodeId: 'geocode', sourceField: 'place' },
+      },
+    },
+    {
+      id: 'col',
+      type: 'Collect',
+      label: 'Verdicts',
+      position: { x: 1020, y: 240 },
+      config: {},
+      inputMap: {
+        value: { sourceNodeId: 'classify', sourceField: '$' },
+      },
+    },
+    {
+      id: 'result',
+      type: 'Result',
+      label: 'Sweep Report',
+      position: { x: 1260, y: 240 },
+      config: {},
+      inputMap: {
+        data: { sourceNodeId: 'col', sourceField: '$' },
+      },
+    },
+  ];
+
+  const edges: WorkflowEdge[] = [
+    { id: 'e0', source: 'input', target: 'fe', targetHandle: 'items' },
+    { id: 'e1', source: 'fe', target: 'geocode', targetHandle: 'city' },
+    { id: 'e2', source: 'geocode', target: 'forecast', targetHandle: 'latitude' },
+    { id: 'e3', source: 'geocode', target: 'forecast', targetHandle: 'longitude' },
+    { id: 'e4', source: 'forecast', target: 'classify', targetHandle: 'windKmh' },
+    { id: 'e5', source: 'forecast', target: 'classify', targetHandle: 'rainChancePct' },
+    { id: 'e6', source: 'classify', target: 'col', targetHandle: 'value' },
+    { id: 'e7', source: 'col', target: 'result', targetHandle: 'data' },
+  ];
+
+  return {
+    id: 'city-sweep',
+    name: 'City Sweep',
+    version: 1,
+    nodes,
+    edges,
+    // Live-weather flow: results depend on real conditions, so scenarios
+    // mainly exercise loop shape (batch count, empty list) rather than a
+    // specific branch outcome.
+    scenarios: [
+      {
+        id: 'scn-two',
+        name: 'two cities',
+        description: 'Two iterations through the loop body',
+        input: { cities: ['Belfast', 'Valencia'] },
+      },
+      {
+        id: 'scn-five',
+        name: 'five cities',
+        description: 'Five iterations — GeocodeCity takes one city at a time, so batchSize stays 1',
+        input: { cities: ['Belfast', 'Valencia', 'Reykjavik', 'Tokyo', 'Nairobi'] },
+      },
+      {
+        id: 'scn-empty',
+        name: 'empty list',
+        description: 'No cities — ForEach/Collect run zero iterations',
+        input: { cities: [] },
+      },
+    ],
+    createdAt: '2026-07-02T00:00:00Z',
+    updatedAt: '2026-07-02T00:00:00Z',
+  };
+}

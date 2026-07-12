@@ -1,0 +1,160 @@
+{
+  "id": "detect-prod",
+  "name": "Detect (Production)",
+  "version": 1,
+  "folder": "Ops",
+  "nodes": [
+    {
+      "id": "input",
+      "type": "Input",
+      "label": "Series Request",
+      "position": {
+        "x": 60,
+        "y": 240
+      },
+      "config": {
+        "fields": [
+          {
+            "name": "points",
+            "type": "number",
+            "required": true
+          },
+          {
+            "name": "spikeIndex",
+            "type": "number"
+          }
+        ],
+        "defaults": {
+          "points": 24
+        }
+      }
+    },
+    {
+      "id": "build",
+      "type": "BuildSeries",
+      "label": "Build Series",
+      "position": {
+        "x": 300,
+        "y": 240
+      },
+      "config": {
+        "baseValue": 100,
+        "spikeFactor": 3
+      },
+      "inputMap": {
+        "points": {
+          "sourceNodeId": "input",
+          "sourceField": "points"
+        },
+        "spikeIndex": {
+          "sourceNodeId": "input",
+          "sourceField": "spikeIndex"
+        }
+      }
+    },
+    {
+      "id": "detect",
+      "type": "DetectEntireSeries",
+      "label": "Detect",
+      "position": {
+        "x": 540,
+        "y": 240
+      },
+      "config": {
+        "apiKey": {
+          "$secret": "ANOMALY_API_KEY"
+        },
+        "sensitivity": 80
+      },
+      "inputMap": {
+        "series": {
+          "sourceNodeId": "build",
+          "sourceField": "series"
+        }
+      }
+    },
+    {
+      "id": "summarize",
+      "type": "SummarizeAnomalies",
+      "label": "Summarize",
+      "position": {
+        "x": 780,
+        "y": 240
+      },
+      "config": {},
+      "inputMap": {
+        "isAnomaly": {
+          "sourceNodeId": "detect",
+          "sourceField": "isAnomaly"
+        },
+        "series": {
+          "sourceNodeId": "build",
+          "sourceField": "series"
+        }
+      }
+    },
+    {
+      "id": "result",
+      "type": "Result",
+      "label": "Report",
+      "position": {
+        "x": 1020,
+        "y": 240
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "summarize",
+          "sourceField": "$"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "input",
+      "target": "build",
+      "targetHandle": "points"
+    },
+    {
+      "id": "e2",
+      "source": "build",
+      "target": "detect",
+      "targetHandle": "series"
+    },
+    {
+      "id": "e3",
+      "source": "detect",
+      "target": "summarize",
+      "targetHandle": "isAnomaly"
+    },
+    {
+      "id": "e4",
+      "source": "summarize",
+      "target": "result",
+      "targetHandle": "data"
+    }
+  ],
+  "createdAt": "2026-07-02T22:00:00Z",
+  "updatedAt": "2026-07-02T22:00:00Z",
+  "scenarios": [
+    {
+      "id": "scn-spike",
+      "name": "spike at 25",
+      "description": "30-point series, x3 spike at #25 — detector must flag it",
+      "input": {
+        "points": 30,
+        "spikeIndex": 25
+      }
+    },
+    {
+      "id": "scn-flat",
+      "name": "flat series",
+      "description": "30 clean points, no spike — nothing flagged",
+      "input": {
+        "points": 30
+      }
+    }
+  ]
+}

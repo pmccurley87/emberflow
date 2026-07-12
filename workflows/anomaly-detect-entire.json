@@ -1,0 +1,247 @@
+{
+  "id": "anomaly-detect-entire",
+  "name": "Detect · Entire Series",
+  "version": 1,
+  "folder": "Anomaly API",
+  "nodes": [
+    {
+      "id": "input",
+      "type": "Input",
+      "label": "Series Request",
+      "position": {
+        "x": -180,
+        "y": 240
+      },
+      "config": {
+        "fields": [
+          {
+            "name": "points",
+            "type": "number",
+            "required": true
+          },
+          {
+            "name": "spikeIndex",
+            "type": "number"
+          }
+        ],
+        "defaults": {
+          "points": 24,
+          "spikeIndex": 20
+        }
+      }
+    },
+    {
+      "id": "build",
+      "type": "BuildSeries",
+      "label": "Build Series",
+      "position": {
+        "x": 60,
+        "y": 240
+      },
+      "config": {
+        "points": 24,
+        "baseValue": 100,
+        "spikeIndex": 20,
+        "spikeFactor": 3
+      },
+      "inputMap": {
+        "points": {
+          "sourceNodeId": "input",
+          "sourceField": "points"
+        },
+        "spikeIndex": {
+          "sourceNodeId": "input",
+          "sourceField": "spikeIndex"
+        }
+      }
+    },
+    {
+      "id": "detect",
+      "type": "DetectEntireSeries",
+      "label": "Detect Entire Series",
+      "position": {
+        "x": 300,
+        "y": 240
+      },
+      "config": {
+        "apiKey": "dev-emberflow",
+        "sensitivity": 80
+      },
+      "inputMap": {
+        "series": {
+          "sourceNodeId": "build",
+          "sourceField": "series"
+        }
+      }
+    },
+    {
+      "id": "summarize",
+      "type": "SummarizeAnomalies",
+      "label": "Summarize Anomalies",
+      "position": {
+        "x": 609.5186505116511,
+        "y": 234.08351910539142
+      },
+      "config": {},
+      "inputMap": {
+        "isAnomaly": {
+          "sourceNodeId": "detect",
+          "sourceField": "isAnomaly"
+        },
+        "series": {
+          "sourceNodeId": "build",
+          "sourceField": "series"
+        }
+      }
+    },
+    {
+      "id": "cond",
+      "type": "Conditional",
+      "label": "Severity?",
+      "position": {
+        "x": 889.8374203186105,
+        "y": 240
+      },
+      "config": {
+        "branches": [
+          {
+            "name": "anomalous",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "fallback": "clean"
+      },
+      "inputMap": {
+        "value": {
+          "sourceNodeId": "summarize",
+          "sourceField": "anomalyCount"
+        }
+      }
+    },
+    {
+      "id": "composeIncident",
+      "type": "ComposeIncident",
+      "label": "Compose Incident",
+      "position": {
+        "x": 1260,
+        "y": 120
+      },
+      "config": {},
+      "inputMap": {
+        "headline": {
+          "sourceNodeId": "summarize",
+          "sourceField": "headline"
+        },
+        "anomalyCount": {
+          "sourceNodeId": "summarize",
+          "sourceField": "anomalyCount"
+        }
+      }
+    },
+    {
+      "id": "incidentResult",
+      "type": "Result",
+      "label": "Incident",
+      "position": {
+        "x": 1500,
+        "y": 120
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "composeIncident",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "cleanResult",
+      "type": "Result",
+      "label": "All Clear",
+      "position": {
+        "x": 1260,
+        "y": 360
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "summarize",
+          "sourceField": "$"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e0",
+      "source": "input",
+      "target": "build",
+      "targetHandle": "points"
+    },
+    {
+      "id": "e1",
+      "source": "build",
+      "target": "detect",
+      "targetHandle": "series"
+    },
+    {
+      "id": "e2",
+      "source": "detect",
+      "target": "summarize",
+      "targetHandle": "isAnomaly"
+    },
+    {
+      "id": "e3",
+      "source": "build",
+      "target": "summarize",
+      "targetHandle": "series"
+    },
+    {
+      "id": "e4",
+      "source": "summarize",
+      "target": "cond",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e6",
+      "source": "cond",
+      "target": "composeIncident",
+      "sourceHandle": "anomalous"
+    },
+    {
+      "id": "e7",
+      "source": "cond",
+      "target": "cleanResult",
+      "sourceHandle": "clean"
+    },
+    {
+      "id": "e8",
+      "source": "composeIncident",
+      "target": "incidentResult",
+      "targetHandle": "data"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "scn-spike",
+      "name": "spike at 20",
+      "description": "×3 spike — detector flags it, incident branch fires",
+      "input": {
+        "points": 24,
+        "spikeIndex": 20
+      }
+    },
+    {
+      "id": "scn-flat",
+      "name": "flat series",
+      "description": "no spike (spikeIndex −1) — clean branch, all clear",
+      "input": {
+        "points": 24,
+        "spikeIndex": -1
+      }
+    }
+  ],
+  "createdAt": "2026-07-02T00:00:00Z",
+  "updatedAt": "2026-07-02T00:00:00Z"
+}

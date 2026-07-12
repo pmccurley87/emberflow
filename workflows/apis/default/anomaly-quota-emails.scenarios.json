@@ -1,0 +1,26 @@
+[
+  {
+    "id": "scn-quiet",
+    "name": "quiet month",
+    "description": "400/1000 calls — no email",
+    "input": {
+      "calls": 400
+    }
+  },
+  {
+    "id": "scn-warn",
+    "name": "approaching limit",
+    "description": "850/1000 calls — 80% warning email",
+    "input": {
+      "calls": 850
+    }
+  },
+  {
+    "id": "scn-over",
+    "name": "over quota",
+    "description": "1200/1000 calls — exceeded email",
+    "input": {
+      "calls": 1200
+    }
+  }
+]

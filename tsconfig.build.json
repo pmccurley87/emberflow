@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "allowJs": true,
+
+    "rootDir": ".",
+    "outDir": "dist",
+    "declaration": true,
+    "noEmit": false
+  },
+  "include": [
+    "src/config.ts",
+    "src/engine",
+    "src/nodes",
+    "src/flows",
+    "src/lib/pathParams.ts",
+    "server",
+    "bin/commands.ts",
+    "bin/init.ts",
+    "bin/skillTargets.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.test.*",
+    "**/__fixtures__/**",
+    "**/*.tsx"
+  ]
+}

@@ -1,0 +1,18 @@
+[
+  {
+    "id": "scn-stormy",
+    "name": "stormy city",
+    "description": "Reykjavik — wind/rain usually trips the severe branch",
+    "input": {
+      "city": "Reykjavik"
+    }
+  },
+  {
+    "id": "scn-calm",
+    "name": "calm city",
+    "description": "Valencia — mild branch, plain advisory",
+    "input": {
+      "city": "Valencia"
+    }
+  }
+]

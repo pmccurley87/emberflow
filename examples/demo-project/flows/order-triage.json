@@ -1,0 +1,27 @@
+{
+  "id": "order-triage",
+  "name": "Order Triage",
+  "version": 1,
+  "nodes": [
+    { "id": "in", "type": "Input", "label": "Order", "position": { "x": 0, "y": 120 },
+      "config": { "fields": [
+        { "name": "total", "type": "number", "required": true },
+        { "name": "express", "type": "boolean" }
+      ], "defaults": { "total": 120, "express": false } } },
+    { "id": "triage", "type": "TriageOrder", "label": "Triage", "position": { "x": 320, "y": 120 },
+      "config": {},
+      "inputMap": {
+        "total": { "sourceNodeId": "in", "sourceField": "total" },
+        "express": { "sourceNodeId": "in", "sourceField": "express" }
+      } },
+    { "id": "out", "type": "Result", "label": "Decision", "position": { "x": 640, "y": 120 },
+      "config": {},
+      "inputMap": { "data": { "sourceNodeId": "triage", "sourceField": "$" } } }
+  ],
+  "edges": [
+    { "id": "e1", "source": "in", "target": "triage" },
+    { "id": "e2", "source": "triage", "target": "out" }
+  ],
+  "createdAt": "2026-07-04T00:00:00Z",
+  "updatedAt": "2026-07-04T00:00:00Z"
+}

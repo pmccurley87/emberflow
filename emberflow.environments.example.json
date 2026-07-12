@@ -1,0 +1,23 @@
+{
+  "_README": "Structure only — safe to read/edit and to share as an example. NEVER put secret VALUES here. Each environment's `secrets` is a LIST of key NAMES; the actual values live in emberflow.secrets.json (git-ignored, chmod 600). `vars` are non-secret config (URLs, ids, flags) and are visible in the UI/logs.",
+  "defaultEnvironment": "local",
+  "environments": {
+    "local": {
+      "vars": {
+        "API_BASE_URL": "http://localhost:8091"
+      },
+      "secrets": [
+        "SERVICE_API_KEY"
+      ]
+    },
+    "prod": {
+      "protected": true,
+      "vars": {
+        "API_BASE_URL": "https://REPLACE_ME.example.com"
+      },
+      "secrets": [
+        "SERVICE_API_KEY"
+      ]
+    }
+  }
+}

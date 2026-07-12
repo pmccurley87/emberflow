@@ -1,0 +1,235 @@
+{
+  "id": "ev-night-charge",
+  "name": "EV · Night Charge",
+  "version": 1,
+  "folder": "EV Charging Demo",
+  "nodes": [
+    {
+      "id": "input",
+      "type": "Input",
+      "label": "Night Snapshot",
+      "position": {
+        "x": -40,
+        "y": 240
+      },
+      "config": {
+        "fields": [
+          {
+            "name": "evBattery",
+            "type": "number",
+            "required": true
+          },
+          {
+            "name": "pluggedIn",
+            "type": "boolean",
+            "required": true
+          },
+          {
+            "name": "tomorrowKwh",
+            "type": "number"
+          },
+          {
+            "name": "alreadyTriggeredToday",
+            "type": "boolean"
+          },
+          {
+            "name": "now",
+            "type": "datetime",
+            "required": true
+          }
+        ],
+        "defaults": {
+          "evBattery": 30,
+          "pluggedIn": true,
+          "tomorrowKwh": 24,
+          "alreadyTriggeredToday": false,
+          "now": "2026-07-02T23:30:00Z"
+        }
+      }
+    },
+    {
+      "id": "sun",
+      "type": "EvSunClock",
+      "label": "Sun Clock",
+      "position": {
+        "x": 220,
+        "y": 240
+      },
+      "config": {},
+      "inputMap": {
+        "now": {
+          "sourceNodeId": "input",
+          "sourceField": "now"
+        }
+      }
+    },
+    {
+      "id": "night",
+      "type": "EvNightChargeDecision",
+      "label": "Night Charge Decision",
+      "position": {
+        "x": 460,
+        "y": 240
+      },
+      "config": {},
+      "inputMap": {
+        "evBattery": {
+          "sourceNodeId": "input",
+          "sourceField": "evBattery"
+        },
+        "pluggedIn": {
+          "sourceNodeId": "input",
+          "sourceField": "pluggedIn"
+        },
+        "tomorrowKwh": {
+          "sourceNodeId": "input",
+          "sourceField": "tomorrowKwh"
+        },
+        "hour": {
+          "sourceNodeId": "sun",
+          "sourceField": "hour"
+        },
+        "alreadyTriggeredToday": {
+          "sourceNodeId": "input",
+          "sourceField": "alreadyTriggeredToday"
+        }
+      }
+    },
+    {
+      "id": "resultSkip",
+      "type": "Result",
+      "label": "Skip Night Charge",
+      "position": {
+        "x": 700,
+        "y": 380
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "night",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "startCharge",
+      "type": "EvStartCharge",
+      "label": "Start Charge (grid)",
+      "position": {
+        "x": 700,
+        "y": 160
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {}
+    },
+    {
+      "id": "notify",
+      "type": "EvNotify",
+      "label": "Notify (night charge)",
+      "position": {
+        "x": 940,
+        "y": 160
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {
+        "title": {
+          "sourceNodeId": "startCharge",
+          "sourceField": "reason"
+        },
+        "message": {
+          "sourceNodeId": "startCharge",
+          "sourceField": "command"
+        }
+      }
+    },
+    {
+      "id": "result",
+      "type": "Result",
+      "label": "Night Charge Started",
+      "position": {
+        "x": 1180,
+        "y": 160
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "notify",
+          "sourceField": "$"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e0",
+      "source": "input",
+      "target": "sun",
+      "targetHandle": "now"
+    },
+    {
+      "id": "e1",
+      "source": "sun",
+      "target": "night"
+    },
+    {
+      "id": "e2",
+      "source": "sun",
+      "target": "night",
+      "targetHandle": "hour"
+    },
+    {
+      "id": "e3",
+      "source": "night",
+      "target": "startCharge",
+      "sourceHandle": "charge"
+    },
+    {
+      "id": "e4",
+      "source": "startCharge",
+      "target": "notify",
+      "targetHandle": "title"
+    },
+    {
+      "id": "e5",
+      "source": "notify",
+      "target": "result",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e6",
+      "source": "night",
+      "target": "resultSkip",
+      "sourceHandle": "skip"
+    },
+    {
+      "id": "m-night-evBattery",
+      "source": "input",
+      "target": "night",
+      "targetHandle": "evBattery"
+    },
+    {
+      "id": "m-night-pluggedIn",
+      "source": "input",
+      "target": "night",
+      "targetHandle": "pluggedIn"
+    },
+    {
+      "id": "m-night-tomorrowKwh",
+      "source": "input",
+      "target": "night",
+      "targetHandle": "tomorrowKwh"
+    },
+    {
+      "id": "m-night-alreadyTriggeredToday",
+      "source": "input",
+      "target": "night",
+      "targetHandle": "alreadyTriggeredToday"
+    }
+  ],
+  "createdAt": "2026-07-03T00:00:00Z",
+  "updatedAt": "2026-07-03T00:00:00Z"
+}

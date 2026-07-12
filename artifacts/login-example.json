@@ -1,0 +1,237 @@
+{
+  "$artifact": "emberflow/v1",
+  "publishedAt": "2026-07-02T21:28:59.199Z",
+  "inputSchema": [
+    {
+      "name": "username",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "password",
+      "type": "string",
+      "required": true
+    }
+  ],
+  "nodeHashes": {
+    "Input": "80b3898b1647f3da4c64a3602fcba0d21e41e35d5e24d88a5b759273097a2e11",
+    "ValidateCredentials": "dbc6fbde650d4345593cd21ff02f5e5f33706f34b4c1d1af2d8ecb52b14fe061",
+    "FetchUser": "85a38e009e63d8318ecf88b654b99a1fc7f5d6627215e6aa2e25f5dae9db26cf",
+    "Route": "3f57e6a82b2abf864b032754a967ecfabfe01b751027fbb368f45e7d26546ecc",
+    "WelcomeUser": "408cd271d5251458e57a85ee45e3cce405c3cbda910438875ec614583936637c",
+    "CheckPlan": "2fa4fd2fdc0396a82082e36816cf3f8e9d4f21d6e01e801372f7d8f20848ea0f",
+    "IssueToken": "1e56b9ebdd4d253becc94217ae6a1023bef469ea20937da8dcf1cf8d8236d890",
+    "Result": "8ecb2427e9295a8d9ce2c829f62f88033222bcdddda1b9fe541c97f729671a1d"
+  },
+  "flow": {
+    "id": "login-example",
+    "name": "Login Example",
+    "version": 1,
+    "nodes": [
+      {
+        "id": "input",
+        "type": "Input",
+        "label": "Login Request",
+        "position": {
+          "x": 60,
+          "y": 220
+        },
+        "config": {
+          "fields": [
+            {
+              "name": "username",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "password",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "defaults": {
+            "username": "ada",
+            "password": "lovelace"
+          }
+        }
+      },
+      {
+        "id": "validate",
+        "type": "ValidateCredentials",
+        "label": "Validate Credentials",
+        "position": {
+          "x": 300,
+          "y": 220
+        },
+        "config": {},
+        "inputMap": {
+          "username": {
+            "sourceNodeId": "input",
+            "sourceField": "username"
+          },
+          "password": {
+            "sourceNodeId": "input",
+            "sourceField": "password"
+          }
+        }
+      },
+      {
+        "id": "fetch",
+        "type": "FetchUser",
+        "label": "Fetch User",
+        "position": {
+          "x": 540,
+          "y": 220
+        },
+        "config": {},
+        "inputMap": {
+          "userId": {
+            "sourceNodeId": "validate",
+            "sourceField": "userId"
+          }
+        }
+      },
+      {
+        "id": "route",
+        "type": "Route",
+        "label": "New user?",
+        "position": {
+          "x": 780,
+          "y": 220
+        },
+        "config": {
+          "field": "isNew",
+          "branches": [
+            "true"
+          ],
+          "fallback": "existing"
+        },
+        "inputMap": {
+          "value": {
+            "sourceNodeId": "fetch",
+            "sourceField": "$"
+          }
+        }
+      },
+      {
+        "id": "welcome",
+        "type": "WelcomeUser",
+        "label": "Welcome User",
+        "position": {
+          "x": 1020,
+          "y": 100
+        },
+        "config": {},
+        "inputMap": {
+          "user": {
+            "sourceNodeId": "fetch",
+            "sourceField": "$"
+          }
+        }
+      },
+      {
+        "id": "checkPlan",
+        "type": "CheckPlan",
+        "label": "Check Plan",
+        "position": {
+          "x": 1020,
+          "y": 340
+        },
+        "config": {},
+        "inputMap": {
+          "user": {
+            "sourceNodeId": "fetch",
+            "sourceField": "$"
+          }
+        }
+      },
+      {
+        "id": "issueToken",
+        "type": "IssueToken",
+        "label": "Issue Token",
+        "position": {
+          "x": 1260,
+          "y": 220
+        },
+        "config": {},
+        "inputMap": {
+          "userId": {
+            "sourceNodeId": "fetch",
+            "sourceField": "id"
+          },
+          "plan": {
+            "sourceNodeId": "checkPlan",
+            "sourceField": "plan"
+          }
+        }
+      },
+      {
+        "id": "result",
+        "type": "Result",
+        "label": "Result",
+        "position": {
+          "x": 1500,
+          "y": 220
+        },
+        "config": {},
+        "inputMap": {
+          "data": {
+            "sourceNodeId": "issueToken",
+            "sourceField": "$"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "e0",
+        "source": "input",
+        "target": "validate",
+        "targetHandle": "username"
+      },
+      {
+        "id": "e1",
+        "source": "validate",
+        "target": "fetch",
+        "targetHandle": "userId"
+      },
+      {
+        "id": "e2",
+        "source": "fetch",
+        "target": "route",
+        "targetHandle": "value"
+      },
+      {
+        "id": "e3",
+        "source": "route",
+        "target": "welcome",
+        "sourceHandle": "true"
+      },
+      {
+        "id": "e4",
+        "source": "route",
+        "target": "checkPlan",
+        "sourceHandle": "existing"
+      },
+      {
+        "id": "e5",
+        "source": "welcome",
+        "target": "issueToken"
+      },
+      {
+        "id": "e6",
+        "source": "checkPlan",
+        "target": "issueToken",
+        "targetHandle": "plan"
+      },
+      {
+        "id": "e7",
+        "source": "issueToken",
+        "target": "result",
+        "targetHandle": "data"
+      }
+    ],
+    "createdAt": "2026-07-02T00:00:00Z",
+    "updatedAt": "2026-07-02T00:00:00Z"
+  }
+}

@@ -1,0 +1,240 @@
+{
+  "id": "login-example",
+  "name": "Login Example",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "input",
+      "type": "Input",
+      "label": "Login Request",
+      "position": {
+        "x": 60,
+        "y": 220
+      },
+      "config": {
+        "fields": [
+          {
+            "name": "username",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "password",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "defaults": {
+          "username": "ada",
+          "password": "lovelace"
+        }
+      }
+    },
+    {
+      "id": "validate",
+      "type": "ValidateCredentials",
+      "label": "Validate Credentials",
+      "position": {
+        "x": 300,
+        "y": 220
+      },
+      "config": {},
+      "inputMap": {
+        "username": {
+          "sourceNodeId": "input",
+          "sourceField": "username"
+        },
+        "password": {
+          "sourceNodeId": "input",
+          "sourceField": "password"
+        }
+      }
+    },
+    {
+      "id": "fetch",
+      "type": "FetchUser",
+      "label": "Fetch User",
+      "position": {
+        "x": 540,
+        "y": 220
+      },
+      "config": {},
+      "inputMap": {
+        "userId": {
+          "sourceNodeId": "validate",
+          "sourceField": "userId"
+        }
+      }
+    },
+    {
+      "id": "route",
+      "type": "Route",
+      "label": "New user?",
+      "position": {
+        "x": 780,
+        "y": 220
+      },
+      "config": {
+        "field": "isNew",
+        "branches": [
+          "true"
+        ],
+        "fallback": "existing"
+      },
+      "inputMap": {
+        "value": {
+          "sourceNodeId": "fetch",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "welcome",
+      "type": "WelcomeUser",
+      "label": "Welcome User",
+      "position": {
+        "x": 1020,
+        "y": 100
+      },
+      "config": {},
+      "inputMap": {
+        "user": {
+          "sourceNodeId": "fetch",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "checkPlan",
+      "type": "CheckPlan",
+      "label": "Check Plan",
+      "position": {
+        "x": 1020,
+        "y": 340
+      },
+      "config": {},
+      "inputMap": {
+        "user": {
+          "sourceNodeId": "fetch",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "issueToken",
+      "type": "IssueToken",
+      "label": "Issue Token",
+      "position": {
+        "x": 1260,
+        "y": 220
+      },
+      "config": {},
+      "inputMap": {
+        "userId": {
+          "sourceNodeId": "fetch",
+          "sourceField": "id"
+        },
+        "plan": {
+          "sourceNodeId": "checkPlan",
+          "sourceField": "plan"
+        }
+      }
+    },
+    {
+      "id": "result",
+      "type": "Result",
+      "label": "Result",
+      "position": {
+        "x": 1500,
+        "y": 220
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "issueToken",
+          "sourceField": "$"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e0",
+      "source": "input",
+      "target": "validate",
+      "targetHandle": "username"
+    },
+    {
+      "id": "e1",
+      "source": "validate",
+      "target": "fetch",
+      "targetHandle": "userId"
+    },
+    {
+      "id": "e2",
+      "source": "fetch",
+      "target": "route",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e3",
+      "source": "route",
+      "target": "welcome",
+      "sourceHandle": "true"
+    },
+    {
+      "id": "e4",
+      "source": "route",
+      "target": "checkPlan",
+      "sourceHandle": "existing"
+    },
+    {
+      "id": "e5",
+      "source": "welcome",
+      "target": "issueToken"
+    },
+    {
+      "id": "e6",
+      "source": "checkPlan",
+      "target": "issueToken",
+      "targetHandle": "plan"
+    },
+    {
+      "id": "e7",
+      "source": "issueToken",
+      "target": "result",
+      "targetHandle": "data"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "scn-new-user",
+      "name": "new user",
+      "description": "newton is new — welcome branch, checkPlan skipped",
+      "input": {
+        "username": "newton",
+        "password": "apple123"
+      }
+    },
+    {
+      "id": "scn-existing-pro",
+      "name": "existing pro",
+      "description": "ada-pro exists on the pro plan — plan-check branch",
+      "input": {
+        "username": "ada-pro",
+        "password": "lovelace"
+      }
+    },
+    {
+      "id": "scn-bad-password",
+      "name": "bad password",
+      "description": "password under 4 chars — validation fails the run",
+      "input": {
+        "username": "ada",
+        "password": "abc"
+      }
+    }
+  ],
+  "createdAt": "2026-07-02T00:00:00Z",
+  "updatedAt": "2026-07-02T00:00:00Z"
+}

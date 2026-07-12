@@ -1,0 +1,146 @@
+[
+  {
+    "id": "scn-urgent",
+    "name": "urgent (EV <50%)",
+    "description": "EV 40% → urgent band 1200/400.",
+    "input": {
+      "homeSoc": 20,
+      "ppv": 1500,
+      "sunHoursLeft": 4,
+      "evBattery": 40,
+      "forecast": {
+        "remainingKwh": 15,
+        "strongHoursLeft": 4
+      },
+      "surplusTrend": 0,
+      "socTrend": 0,
+      "target": 80
+    }
+  },
+  {
+    "id": "scn-buffer",
+    "name": "home buffer",
+    "description": "Home 60% (≥30) → buffer band 1200/400.",
+    "input": {
+      "homeSoc": 60,
+      "ppv": 300,
+      "sunHoursLeft": 4,
+      "evBattery": 60,
+      "forecast": {
+        "remainingKwh": 15,
+        "strongHoursLeft": 4
+      },
+      "surplusTrend": 0,
+      "socTrend": 0,
+      "target": 80
+    }
+  },
+  {
+    "id": "scn-flat",
+    "name": "flat home",
+    "description": "Home 10% flat, EV not urgent → default 2000/800.",
+    "input": {
+      "homeSoc": 10,
+      "ppv": 1500,
+      "sunHoursLeft": 4,
+      "evBattery": 70,
+      "forecast": {
+        "remainingKwh": 15,
+        "strongHoursLeft": 4
+      },
+      "surplusTrend": 0,
+      "socTrend": 0,
+      "target": 80
+    }
+  },
+  {
+    "id": "scn-predictive",
+    "name": "predictive export",
+    "description": "Home 95% + ppv 2200W → predictive 500/200.",
+    "input": {
+      "homeSoc": 95,
+      "ppv": 2200,
+      "sunHoursLeft": 4,
+      "evBattery": 60,
+      "forecast": {
+        "remainingKwh": 15,
+        "strongHoursLeft": 4
+      },
+      "surplusTrend": 0,
+      "socTrend": 0,
+      "target": 80
+    }
+  },
+  {
+    "id": "scn-golden",
+    "name": "golden hour",
+    "description": "1.5h to sunset → golden hour ≤800/200.",
+    "input": {
+      "homeSoc": 10,
+      "ppv": 900,
+      "sunHoursLeft": 1.5,
+      "evBattery": 60,
+      "forecast": {
+        "remainingKwh": 3,
+        "strongHoursLeft": 1
+      },
+      "surplusTrend": 0,
+      "socTrend": 0,
+      "target": 80
+    }
+  },
+  {
+    "id": "scn-worth-it-skip",
+    "name": "worth-it skip",
+    "description": "EV 70% with 0.8kWh remaining → skip branch.",
+    "input": {
+      "homeSoc": 50,
+      "ppv": 300,
+      "sunHoursLeft": 1,
+      "evBattery": 70,
+      "forecast": {
+        "remainingKwh": 0.8,
+        "strongHoursLeft": 0
+      },
+      "surplusTrend": 0,
+      "socTrend": 0,
+      "target": 90
+    }
+  },
+  {
+    "id": "scn-trend-surplus",
+    "name": "trend: surplus rising",
+    "description": "surplusTrend 300 → start ≤1000.",
+    "input": {
+      "homeSoc": 10,
+      "ppv": 1500,
+      "sunHoursLeft": 4,
+      "evBattery": 60,
+      "forecast": {
+        "remainingKwh": 15,
+        "strongHoursLeft": 4
+      },
+      "surplusTrend": 300,
+      "socTrend": 0,
+      "target": 80
+    }
+  },
+  {
+    "id": "scn-trend-soc",
+    "name": "trend: SOC rising",
+    "description": "socTrend 3 with home 80% → start ≤600.",
+    "input": {
+      "homeSoc": 80,
+      "ppv": 1500,
+      "sunHoursLeft": 4,
+      "evBattery": 60,
+      "forecast": {
+        "remainingKwh": 15,
+        "strongHoursLeft": 4
+      },
+      "surplusTrend": 0,
+      "socTrend": 3,
+      "target": 80
+    }
+  }
+]

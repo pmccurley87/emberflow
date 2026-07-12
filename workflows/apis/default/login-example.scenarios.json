@@ -1,0 +1,29 @@
+[
+  {
+    "id": "scn-new-user",
+    "name": "new user",
+    "description": "newton is new — welcome branch, checkPlan skipped",
+    "input": {
+      "username": "newton",
+      "password": "apple123"
+    }
+  },
+  {
+    "id": "scn-existing-pro",
+    "name": "existing pro",
+    "description": "ada-pro exists on the pro plan — plan-check branch",
+    "input": {
+      "username": "ada-pro",
+      "password": "lovelace"
+    }
+  },
+  {
+    "id": "scn-bad-password",
+    "name": "bad password",
+    "description": "password under 4 chars — validation fails the run",
+    "input": {
+      "username": "ada",
+      "password": "abc"
+    }
+  }
+]

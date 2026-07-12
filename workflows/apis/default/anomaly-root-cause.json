@@ -1,0 +1,97 @@
+{
+  "id": "anomaly-root-cause",
+  "name": "Detect · Root Cause",
+  "version": 1,
+  "folder": "Anomaly API",
+  "nodes": [
+    {
+      "id": "build",
+      "type": "BuildDimensionalSeries",
+      "label": "Build Dimensional Series",
+      "position": {
+        "x": 60,
+        "y": 200
+      },
+      "config": {
+        "points": 14,
+        "baseValue": 100,
+        "spikeIndex": 12,
+        "culpritSlice": "paid"
+      }
+    },
+    {
+      "id": "detect",
+      "type": "DetectAttributed",
+      "label": "Detect + Attribute",
+      "position": {
+        "x": 310,
+        "y": 200
+      },
+      "config": {
+        "apiKey": "dev-emberflow",
+        "sensitivity": 80,
+        "topK": 3
+      },
+      "inputMap": {
+        "series": {
+          "sourceNodeId": "build",
+          "sourceField": "series"
+        }
+      }
+    },
+    {
+      "id": "extract",
+      "type": "ExtractRootCause",
+      "label": "Extract Root Cause",
+      "position": {
+        "x": 560,
+        "y": 200
+      },
+      "config": {},
+      "inputMap": {
+        "rca": {
+          "sourceNodeId": "detect",
+          "sourceField": "rca"
+        }
+      }
+    },
+    {
+      "id": "result",
+      "type": "Result",
+      "label": "Root Cause",
+      "position": {
+        "x": 810,
+        "y": 200
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "extract",
+          "sourceField": "$"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "build",
+      "target": "detect",
+      "targetHandle": "series"
+    },
+    {
+      "id": "e2",
+      "source": "detect",
+      "target": "extract",
+      "targetHandle": "rca"
+    },
+    {
+      "id": "e3",
+      "source": "extract",
+      "target": "result",
+      "targetHandle": "data"
+    }
+  ],
+  "createdAt": "2026-07-02T00:00:00Z",
+  "updatedAt": "2026-07-02T00:00:00Z"
+}

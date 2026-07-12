@@ -1,0 +1,1259 @@
+{
+  "id": "ev-evaluate-cycle",
+  "name": "EV · Evaluate Cycle",
+  "version": 1,
+  "folder": "EV Charging Demo",
+  "nodes": [
+    {
+      "id": "input",
+      "type": "Input",
+      "label": "Tick Snapshot",
+      "position": {
+        "x": -40,
+        "y": 400
+      },
+      "config": {
+        "fields": [
+          {
+            "name": "ppv",
+            "type": "number",
+            "required": true
+          },
+          {
+            "name": "loadPower",
+            "type": "number",
+            "required": true
+          },
+          {
+            "name": "gridExport",
+            "type": "number",
+            "required": true
+          },
+          {
+            "name": "homeSoc",
+            "type": "number",
+            "required": true
+          },
+          {
+            "name": "evBattery",
+            "type": "number"
+          },
+          {
+            "name": "pluggedIn",
+            "type": "boolean",
+            "required": true
+          },
+          {
+            "name": "charging",
+            "type": "boolean",
+            "required": true
+          },
+          {
+            "name": "forecast",
+            "type": "object"
+          },
+          {
+            "name": "readings",
+            "type": "array"
+          },
+          {
+            "name": "state",
+            "type": "enum",
+            "enumValues": [
+              "idle",
+              "waiting",
+              "charging"
+            ],
+            "required": true
+          },
+          {
+            "name": "now",
+            "type": "datetime",
+            "required": true
+          }
+        ],
+        "defaults": {
+          "ppv": 3000,
+          "loadPower": 500,
+          "gridExport": 2500,
+          "homeSoc": 80,
+          "evBattery": 60,
+          "pluggedIn": true,
+          "charging": false,
+          "state": "idle",
+          "readings": [],
+          "now": "2026-07-02T13:00:00Z",
+          "forecast": {
+            "remainingKwh": 20,
+            "strongHoursLeft": 5,
+            "tomorrowKwh": 25
+          }
+        }
+      }
+    },
+    {
+      "id": "load",
+      "type": "EvLoadTickSnapshot",
+      "label": "Load Tick",
+      "position": {
+        "x": 200,
+        "y": 220
+      },
+      "config": {},
+      "inputMap": {
+        "ppv": {
+          "sourceNodeId": "input",
+          "sourceField": "ppv"
+        },
+        "loadPower": {
+          "sourceNodeId": "input",
+          "sourceField": "loadPower"
+        },
+        "gridExport": {
+          "sourceNodeId": "input",
+          "sourceField": "gridExport"
+        },
+        "homeSoc": {
+          "sourceNodeId": "input",
+          "sourceField": "homeSoc"
+        },
+        "evBattery": {
+          "sourceNodeId": "input",
+          "sourceField": "evBattery"
+        },
+        "pluggedIn": {
+          "sourceNodeId": "input",
+          "sourceField": "pluggedIn"
+        },
+        "charging": {
+          "sourceNodeId": "input",
+          "sourceField": "charging"
+        },
+        "forecast": {
+          "sourceNodeId": "input",
+          "sourceField": "forecast"
+        },
+        "readings": {
+          "sourceNodeId": "input",
+          "sourceField": "readings"
+        },
+        "state": {
+          "sourceNodeId": "input",
+          "sourceField": "state"
+        },
+        "now": {
+          "sourceNodeId": "input",
+          "sourceField": "now"
+        }
+      }
+    },
+    {
+      "id": "sun",
+      "type": "EvSunClock",
+      "label": "Sun Clock",
+      "position": {
+        "x": 200,
+        "y": 400
+      },
+      "config": {},
+      "inputMap": {
+        "now": {
+          "sourceNodeId": "input",
+          "sourceField": "now"
+        }
+      }
+    },
+    {
+      "id": "condSolar",
+      "type": "Conditional",
+      "label": "Solar Hours?",
+      "position": {
+        "x": 440,
+        "y": 400
+      },
+      "config": {
+        "branches": [
+          {
+            "name": "solar",
+            "op": "truthy"
+          }
+        ],
+        "fallback": "off"
+      },
+      "inputMap": {
+        "value": {
+          "sourceNodeId": "sun",
+          "sourceField": "isSolarHours"
+        }
+      }
+    },
+    {
+      "id": "condNight",
+      "type": "Conditional",
+      "label": "Night Window?",
+      "position": {
+        "x": 680,
+        "y": 700
+      },
+      "config": {
+        "branches": [
+          {
+            "name": "night",
+            "op": "truthy"
+          }
+        ],
+        "fallback": "notNight"
+      },
+      "inputMap": {
+        "value": {
+          "sourceNodeId": "sun",
+          "sourceField": "isNightWindow"
+        }
+      }
+    },
+    {
+      "id": "subflowNight",
+      "type": "Subflow",
+      "label": "Night Charge",
+      "position": {
+        "x": 920,
+        "y": 820
+      },
+      "config": {
+        "workflowId": "ev-night-charge"
+      },
+      "inputMap": {
+        "evBattery": {
+          "sourceNodeId": "load",
+          "sourceField": "evBattery"
+        },
+        "pluggedIn": {
+          "sourceNodeId": "load",
+          "sourceField": "pluggedIn"
+        },
+        "tomorrowKwh": {
+          "sourceNodeId": "input",
+          "sourceField": "forecast.tomorrowKwh"
+        },
+        "now": {
+          "sourceNodeId": "input",
+          "sourceField": "now"
+        }
+      }
+    },
+    {
+      "id": "resultNight",
+      "type": "Result",
+      "label": "Night Charge Result",
+      "position": {
+        "x": 1160,
+        "y": 820
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "subflowNight",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "condOffCharging",
+      "type": "Conditional",
+      "label": "Charging Off-Hours?",
+      "position": {
+        "x": 920,
+        "y": 640
+      },
+      "config": {
+        "branches": [
+          {
+            "name": "stop",
+            "op": "truthy"
+          }
+        ],
+        "fallback": "idle"
+      },
+      "inputMap": {
+        "value": {
+          "sourceNodeId": "load",
+          "sourceField": "charging"
+        }
+      }
+    },
+    {
+      "id": "offStop",
+      "type": "EvStopCharge",
+      "label": "Stop Charge (sun set)",
+      "position": {
+        "x": 1160,
+        "y": 580
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {}
+    },
+    {
+      "id": "notifyOff",
+      "type": "EvNotify",
+      "label": "Notify (sun set)",
+      "position": {
+        "x": 1400,
+        "y": 580
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {
+        "title": {
+          "sourceNodeId": "offStop",
+          "sourceField": "reason"
+        },
+        "message": {
+          "sourceNodeId": "offStop",
+          "sourceField": "command"
+        }
+      }
+    },
+    {
+      "id": "resultOffStop",
+      "type": "Result",
+      "label": "Off-Hours Stop",
+      "position": {
+        "x": 1640,
+        "y": 580
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "notifyOff",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "resultOffIdle",
+      "type": "Result",
+      "label": "Off-Hours Idle",
+      "position": {
+        "x": 1160,
+        "y": 720
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "sun",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "surplus",
+      "type": "EvComputeSurplus",
+      "label": "Compute Surplus",
+      "position": {
+        "x": 680,
+        "y": 360
+      },
+      "config": {},
+      "inputMap": {
+        "ppv": {
+          "sourceNodeId": "load",
+          "sourceField": "ppv"
+        },
+        "loadPower": {
+          "sourceNodeId": "load",
+          "sourceField": "loadPower"
+        },
+        "gridExport": {
+          "sourceNodeId": "load",
+          "sourceField": "gridExport"
+        }
+      }
+    },
+    {
+      "id": "trend",
+      "type": "EvTrendWindow",
+      "label": "Trend Window",
+      "position": {
+        "x": 920,
+        "y": 360
+      },
+      "config": {},
+      "inputMap": {
+        "readings": {
+          "sourceNodeId": "input",
+          "sourceField": "readings"
+        }
+      }
+    },
+    {
+      "id": "thresholds",
+      "type": "EvThresholds",
+      "label": "Thresholds",
+      "position": {
+        "x": 1160,
+        "y": 360
+      },
+      "config": {},
+      "inputMap": {
+        "homeSoc": {
+          "sourceNodeId": "load",
+          "sourceField": "homeSoc"
+        },
+        "ppv": {
+          "sourceNodeId": "load",
+          "sourceField": "ppv"
+        },
+        "sunHoursLeft": {
+          "sourceNodeId": "sun",
+          "sourceField": "hoursUntilSunset"
+        },
+        "evBattery": {
+          "sourceNodeId": "load",
+          "sourceField": "evBattery"
+        },
+        "forecast": {
+          "sourceNodeId": "input",
+          "sourceField": "forecast"
+        },
+        "surplusTrend": {
+          "sourceNodeId": "trend",
+          "sourceField": "surplusTrend"
+        },
+        "socTrend": {
+          "sourceNodeId": "trend",
+          "sourceField": "socTrend"
+        }
+      }
+    },
+    {
+      "id": "resultSkip",
+      "type": "Result",
+      "label": "Holding Off (skip)",
+      "position": {
+        "x": 1400,
+        "y": 200
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "thresholds",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "target",
+      "type": "EvTargetCheck",
+      "label": "Target Check",
+      "position": {
+        "x": 1400,
+        "y": 360
+      },
+      "config": {},
+      "inputMap": {
+        "pluggedIn": {
+          "sourceNodeId": "load",
+          "sourceField": "pluggedIn"
+        },
+        "evBattery": {
+          "sourceNodeId": "load",
+          "sourceField": "evBattery"
+        },
+        "isSolarHours": {
+          "sourceNodeId": "sun",
+          "sourceField": "isSolarHours"
+        },
+        "charging": {
+          "sourceNodeId": "load",
+          "sourceField": "charging"
+        }
+      }
+    },
+    {
+      "id": "resultNotPlugged",
+      "type": "Result",
+      "label": "Not Plugged In",
+      "position": {
+        "x": 1640,
+        "y": 160
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "target",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "stopAtTarget",
+      "type": "EvStopCharge",
+      "label": "Stop (at target)",
+      "position": {
+        "x": 1640,
+        "y": 280
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {
+        "reason": {
+          "sourceNodeId": "target",
+          "sourceField": "reason"
+        }
+      }
+    },
+    {
+      "id": "notifyAtTarget",
+      "type": "EvNotify",
+      "label": "Notify (at target)",
+      "position": {
+        "x": 1880,
+        "y": 280
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {
+        "title": {
+          "sourceNodeId": "stopAtTarget",
+          "sourceField": "reason"
+        },
+        "message": {
+          "sourceNodeId": "stopAtTarget",
+          "sourceField": "command"
+        }
+      }
+    },
+    {
+      "id": "resultAtTarget",
+      "type": "Result",
+      "label": "EV At Target",
+      "position": {
+        "x": 2120,
+        "y": 280
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "notifyAtTarget",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "guard",
+      "type": "EvUnscheduledGuard",
+      "label": "Unscheduled Guard",
+      "position": {
+        "x": 1640,
+        "y": 440
+      },
+      "config": {},
+      "inputMap": {
+        "charging": {
+          "sourceNodeId": "load",
+          "sourceField": "charging"
+        },
+        "state": {
+          "sourceNodeId": "input",
+          "sourceField": "state"
+        },
+        "surplus": {
+          "sourceNodeId": "surplus",
+          "sourceField": "surplus"
+        },
+        "startW": {
+          "sourceNodeId": "thresholds",
+          "sourceField": "startW"
+        },
+        "skipReason": {
+          "sourceNodeId": "thresholds",
+          "sourceField": "skipReason"
+        },
+        "homeSoc": {
+          "sourceNodeId": "load",
+          "sourceField": "homeSoc"
+        }
+      }
+    },
+    {
+      "id": "stopUnsched",
+      "type": "EvStopCharge",
+      "label": "Stop (unscheduled)",
+      "position": {
+        "x": 1880,
+        "y": 560
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {
+        "reason": {
+          "sourceNodeId": "guard",
+          "sourceField": "reason"
+        }
+      }
+    },
+    {
+      "id": "notifyUnsched",
+      "type": "EvNotify",
+      "label": "Notify (unscheduled)",
+      "position": {
+        "x": 2120,
+        "y": 560
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {
+        "title": {
+          "sourceNodeId": "stopUnsched",
+          "sourceField": "reason"
+        },
+        "message": {
+          "sourceNodeId": "stopUnsched",
+          "sourceField": "command"
+        }
+      }
+    },
+    {
+      "id": "resultUnsched",
+      "type": "Result",
+      "label": "Unscheduled Stopped",
+      "position": {
+        "x": 2360,
+        "y": 560
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "notifyUnsched",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "reconcile",
+      "type": "EvReconcile",
+      "label": "Reconcile",
+      "position": {
+        "x": 1880,
+        "y": 440
+      },
+      "config": {},
+      "inputMap": {
+        "charging": {
+          "sourceNodeId": "load",
+          "sourceField": "charging"
+        },
+        "state": {
+          "sourceNodeId": "input",
+          "sourceField": "state"
+        }
+      }
+    },
+    {
+      "id": "resultAdopt",
+      "type": "Result",
+      "label": "Adopted (charging continues)",
+      "position": {
+        "x": 2120,
+        "y": 380
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "reconcile",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "decision",
+      "type": "EvChargeDecision",
+      "label": "Charge Decision",
+      "position": {
+        "x": 2120,
+        "y": 460
+      },
+      "config": {},
+      "inputMap": {
+        "state": {
+          "sourceNodeId": "input",
+          "sourceField": "state"
+        },
+        "surplus": {
+          "sourceNodeId": "surplus",
+          "sourceField": "surplus"
+        },
+        "startW": {
+          "sourceNodeId": "thresholds",
+          "sourceField": "startW"
+        },
+        "stopW": {
+          "sourceNodeId": "thresholds",
+          "sourceField": "stopW"
+        },
+        "homeSoc": {
+          "sourceNodeId": "load",
+          "sourceField": "homeSoc"
+        },
+        "skipReason": {
+          "sourceNodeId": "thresholds",
+          "sourceField": "skipReason"
+        }
+      }
+    },
+    {
+      "id": "startCharge",
+      "type": "EvStartCharge",
+      "label": "Start Charge",
+      "position": {
+        "x": 2360,
+        "y": 300
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {
+        "reason": {
+          "sourceNodeId": "decision",
+          "sourceField": "reason"
+        }
+      }
+    },
+    {
+      "id": "notifyStart",
+      "type": "EvNotify",
+      "label": "Notify (start)",
+      "position": {
+        "x": 2600,
+        "y": 300
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {
+        "title": {
+          "sourceNodeId": "startCharge",
+          "sourceField": "reason"
+        },
+        "message": {
+          "sourceNodeId": "startCharge",
+          "sourceField": "command"
+        }
+      }
+    },
+    {
+      "id": "resultStart",
+      "type": "Result",
+      "label": "Charge Started",
+      "position": {
+        "x": 2840,
+        "y": 300
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "notifyStart",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "stopCharge",
+      "type": "EvStopCharge",
+      "label": "Stop Charge",
+      "position": {
+        "x": 2360,
+        "y": 440
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {
+        "reason": {
+          "sourceNodeId": "decision",
+          "sourceField": "reason"
+        }
+      }
+    },
+    {
+      "id": "notifyStop",
+      "type": "EvNotify",
+      "label": "Notify (stop)",
+      "position": {
+        "x": 2600,
+        "y": 440
+      },
+      "config": {
+        "commit": false
+      },
+      "inputMap": {
+        "title": {
+          "sourceNodeId": "stopCharge",
+          "sourceField": "reason"
+        },
+        "message": {
+          "sourceNodeId": "stopCharge",
+          "sourceField": "command"
+        }
+      }
+    },
+    {
+      "id": "resultStop",
+      "type": "Result",
+      "label": "Charge Stopped",
+      "position": {
+        "x": 2840,
+        "y": 440
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "notifyStop",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "resultHoldWaiting",
+      "type": "Result",
+      "label": "Hold (waiting)",
+      "position": {
+        "x": 2360,
+        "y": 560
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "decision",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "resultHoldCharging",
+      "type": "Result",
+      "label": "Hold (charging)",
+      "position": {
+        "x": 2360,
+        "y": 660
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "decision",
+          "sourceField": "$"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "eLoad",
+      "source": "input",
+      "target": "load"
+    },
+    {
+      "id": "e0",
+      "source": "input",
+      "target": "sun",
+      "targetHandle": "now"
+    },
+    {
+      "id": "e1",
+      "source": "sun",
+      "target": "condSolar",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e2",
+      "source": "condSolar",
+      "target": "condNight",
+      "sourceHandle": "off"
+    },
+    {
+      "id": "e3",
+      "source": "sun",
+      "target": "condNight",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e4",
+      "source": "condNight",
+      "target": "subflowNight",
+      "sourceHandle": "night"
+    },
+    {
+      "id": "e4b",
+      "source": "subflowNight",
+      "target": "resultNight",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e5",
+      "source": "condNight",
+      "target": "condOffCharging",
+      "sourceHandle": "notNight"
+    },
+    {
+      "id": "e6",
+      "source": "load",
+      "target": "condOffCharging",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e7",
+      "source": "condOffCharging",
+      "target": "offStop",
+      "sourceHandle": "stop"
+    },
+    {
+      "id": "e8",
+      "source": "offStop",
+      "target": "notifyOff",
+      "targetHandle": "title"
+    },
+    {
+      "id": "e9",
+      "source": "notifyOff",
+      "target": "resultOffStop",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e10",
+      "source": "condOffCharging",
+      "target": "resultOffIdle",
+      "sourceHandle": "idle"
+    },
+    {
+      "id": "e11",
+      "source": "condSolar",
+      "target": "surplus",
+      "sourceHandle": "solar"
+    },
+    {
+      "id": "e11b",
+      "source": "load",
+      "target": "surplus",
+      "targetHandle": "ppv"
+    },
+    {
+      "id": "e12",
+      "source": "surplus",
+      "target": "trend"
+    },
+    {
+      "id": "e13",
+      "source": "trend",
+      "target": "thresholds"
+    },
+    {
+      "id": "e14",
+      "source": "thresholds",
+      "target": "resultSkip",
+      "sourceHandle": "skip"
+    },
+    {
+      "id": "e15",
+      "source": "thresholds",
+      "target": "target",
+      "sourceHandle": "ok"
+    },
+    {
+      "id": "e16",
+      "source": "target",
+      "target": "resultNotPlugged",
+      "sourceHandle": "notPlugged"
+    },
+    {
+      "id": "e17",
+      "source": "target",
+      "target": "stopAtTarget",
+      "sourceHandle": "atTarget"
+    },
+    {
+      "id": "e18",
+      "source": "stopAtTarget",
+      "target": "notifyAtTarget",
+      "targetHandle": "title"
+    },
+    {
+      "id": "e19",
+      "source": "notifyAtTarget",
+      "target": "resultAtTarget",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e20",
+      "source": "target",
+      "target": "guard",
+      "sourceHandle": "belowTarget"
+    },
+    {
+      "id": "e21",
+      "source": "guard",
+      "target": "stopUnsched",
+      "sourceHandle": "stop"
+    },
+    {
+      "id": "e22",
+      "source": "stopUnsched",
+      "target": "notifyUnsched",
+      "targetHandle": "title"
+    },
+    {
+      "id": "e23",
+      "source": "notifyUnsched",
+      "target": "resultUnsched",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e24",
+      "source": "guard",
+      "target": "reconcile",
+      "sourceHandle": "continue"
+    },
+    {
+      "id": "e25",
+      "source": "reconcile",
+      "target": "resultAdopt",
+      "sourceHandle": "adopt"
+    },
+    {
+      "id": "e26",
+      "source": "reconcile",
+      "target": "decision",
+      "sourceHandle": "hold"
+    },
+    {
+      "id": "e27",
+      "source": "decision",
+      "target": "startCharge",
+      "sourceHandle": "start"
+    },
+    {
+      "id": "e28",
+      "source": "startCharge",
+      "target": "notifyStart",
+      "targetHandle": "title"
+    },
+    {
+      "id": "e29",
+      "source": "notifyStart",
+      "target": "resultStart",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e30",
+      "source": "decision",
+      "target": "stopCharge",
+      "sourceHandle": "stop"
+    },
+    {
+      "id": "e31",
+      "source": "stopCharge",
+      "target": "notifyStop",
+      "targetHandle": "title"
+    },
+    {
+      "id": "e32",
+      "source": "notifyStop",
+      "target": "resultStop",
+      "targetHandle": "data"
+    },
+    {
+      "id": "e33",
+      "source": "decision",
+      "target": "resultHoldWaiting",
+      "sourceHandle": "hold_waiting"
+    },
+    {
+      "id": "e34",
+      "source": "decision",
+      "target": "resultHoldCharging",
+      "sourceHandle": "hold_charging"
+    },
+    {
+      "id": "m-subflowNight-evBattery",
+      "source": "load",
+      "target": "subflowNight",
+      "targetHandle": "evBattery"
+    },
+    {
+      "id": "m-subflowNight-pluggedIn",
+      "source": "load",
+      "target": "subflowNight",
+      "targetHandle": "pluggedIn"
+    },
+    {
+      "id": "m-subflowNight-tomorrowKwh",
+      "source": "input",
+      "target": "subflowNight",
+      "targetHandle": "tomorrowKwh"
+    },
+    {
+      "id": "m-subflowNight-now",
+      "source": "input",
+      "target": "subflowNight",
+      "targetHandle": "now"
+    },
+    {
+      "id": "m-resultOffIdle-data",
+      "source": "sun",
+      "target": "resultOffIdle",
+      "targetHandle": "data"
+    },
+    {
+      "id": "m-trend-readings",
+      "source": "input",
+      "target": "trend",
+      "targetHandle": "readings"
+    },
+    {
+      "id": "m-thresholds-homeSoc",
+      "source": "load",
+      "target": "thresholds",
+      "targetHandle": "homeSoc"
+    },
+    {
+      "id": "m-thresholds-ppv",
+      "source": "load",
+      "target": "thresholds",
+      "targetHandle": "ppv"
+    },
+    {
+      "id": "m-thresholds-sunHoursLeft",
+      "source": "sun",
+      "target": "thresholds",
+      "targetHandle": "sunHoursLeft"
+    },
+    {
+      "id": "m-thresholds-evBattery",
+      "source": "load",
+      "target": "thresholds",
+      "targetHandle": "evBattery"
+    },
+    {
+      "id": "m-thresholds-forecast",
+      "source": "input",
+      "target": "thresholds",
+      "targetHandle": "forecast"
+    },
+    {
+      "id": "m-target-pluggedIn",
+      "source": "load",
+      "target": "target",
+      "targetHandle": "pluggedIn"
+    },
+    {
+      "id": "m-target-evBattery",
+      "source": "load",
+      "target": "target",
+      "targetHandle": "evBattery"
+    },
+    {
+      "id": "m-target-isSolarHours",
+      "source": "sun",
+      "target": "target",
+      "targetHandle": "isSolarHours"
+    },
+    {
+      "id": "m-target-charging",
+      "source": "load",
+      "target": "target",
+      "targetHandle": "charging"
+    },
+    {
+      "id": "m-guard-charging",
+      "source": "load",
+      "target": "guard",
+      "targetHandle": "charging"
+    },
+    {
+      "id": "m-guard-state",
+      "source": "input",
+      "target": "guard",
+      "targetHandle": "state"
+    },
+    {
+      "id": "m-guard-surplus",
+      "source": "surplus",
+      "target": "guard",
+      "targetHandle": "surplus"
+    },
+    {
+      "id": "m-guard-startW",
+      "source": "thresholds",
+      "target": "guard",
+      "targetHandle": "startW"
+    },
+    {
+      "id": "m-guard-skipReason",
+      "source": "thresholds",
+      "target": "guard",
+      "targetHandle": "skipReason"
+    },
+    {
+      "id": "m-guard-homeSoc",
+      "source": "load",
+      "target": "guard",
+      "targetHandle": "homeSoc"
+    },
+    {
+      "id": "m-reconcile-charging",
+      "source": "load",
+      "target": "reconcile",
+      "targetHandle": "charging"
+    },
+    {
+      "id": "m-reconcile-state",
+      "source": "input",
+      "target": "reconcile",
+      "targetHandle": "state"
+    },
+    {
+      "id": "m-decision-state",
+      "source": "input",
+      "target": "decision",
+      "targetHandle": "state"
+    },
+    {
+      "id": "m-decision-surplus",
+      "source": "surplus",
+      "target": "decision",
+      "targetHandle": "surplus"
+    },
+    {
+      "id": "m-decision-startW",
+      "source": "thresholds",
+      "target": "decision",
+      "targetHandle": "startW"
+    },
+    {
+      "id": "m-decision-stopW",
+      "source": "thresholds",
+      "target": "decision",
+      "targetHandle": "stopW"
+    },
+    {
+      "id": "m-decision-homeSoc",
+      "source": "load",
+      "target": "decision",
+      "targetHandle": "homeSoc"
+    },
+    {
+      "id": "m-decision-skipReason",
+      "source": "thresholds",
+      "target": "decision",
+      "targetHandle": "skipReason"
+    }
+  ],
+  "createdAt": "2026-07-03T00:00:00Z",
+  "updatedAt": "2026-07-03T00:00:00Z"
+}

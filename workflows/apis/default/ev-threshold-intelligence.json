@@ -1,0 +1,223 @@
+{
+  "id": "ev-threshold-intelligence",
+  "name": "EV · Threshold Intelligence",
+  "version": 1,
+  "folder": "EV Charging Demo",
+  "nodes": [
+    {
+      "id": "input",
+      "type": "Input",
+      "label": "Intelligence Inputs",
+      "position": {
+        "x": -40,
+        "y": 240
+      },
+      "config": {
+        "fields": [
+          {
+            "name": "homeSoc",
+            "type": "number",
+            "required": true
+          },
+          {
+            "name": "ppv",
+            "type": "number",
+            "required": true
+          },
+          {
+            "name": "sunHoursLeft",
+            "type": "number",
+            "required": true
+          },
+          {
+            "name": "evBattery",
+            "type": "number"
+          },
+          {
+            "name": "forecast",
+            "type": "object"
+          },
+          {
+            "name": "surplusTrend",
+            "type": "number"
+          },
+          {
+            "name": "socTrend",
+            "type": "number"
+          },
+          {
+            "name": "target",
+            "type": "number"
+          }
+        ],
+        "defaults": {
+          "homeSoc": 50,
+          "ppv": 1500,
+          "sunHoursLeft": 4,
+          "evBattery": 60,
+          "surplusTrend": 0,
+          "socTrend": 0,
+          "target": 80,
+          "forecast": {
+            "remainingKwh": 15,
+            "strongHoursLeft": 4
+          }
+        }
+      }
+    },
+    {
+      "id": "thresholds",
+      "type": "EvThresholds",
+      "label": "Thresholds",
+      "position": {
+        "x": 220,
+        "y": 160
+      },
+      "config": {},
+      "inputMap": {
+        "homeSoc": {
+          "sourceNodeId": "input",
+          "sourceField": "homeSoc"
+        },
+        "ppv": {
+          "sourceNodeId": "input",
+          "sourceField": "ppv"
+        },
+        "sunHoursLeft": {
+          "sourceNodeId": "input",
+          "sourceField": "sunHoursLeft"
+        },
+        "evBattery": {
+          "sourceNodeId": "input",
+          "sourceField": "evBattery"
+        },
+        "forecast": {
+          "sourceNodeId": "input",
+          "sourceField": "forecast"
+        },
+        "surplusTrend": {
+          "sourceNodeId": "input",
+          "sourceField": "surplusTrend"
+        },
+        "socTrend": {
+          "sourceNodeId": "input",
+          "sourceField": "socTrend"
+        }
+      }
+    },
+    {
+      "id": "resultOk",
+      "type": "Result",
+      "label": "Thresholds (ok)",
+      "position": {
+        "x": 460,
+        "y": 60
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "thresholds",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "resultSkip",
+      "type": "Result",
+      "label": "Thresholds (skip)",
+      "position": {
+        "x": 460,
+        "y": 200
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "thresholds",
+          "sourceField": "$"
+        }
+      }
+    },
+    {
+      "id": "estimate",
+      "type": "EvSessionEstimate",
+      "label": "Session Estimate",
+      "position": {
+        "x": 220,
+        "y": 360
+      },
+      "config": {},
+      "inputMap": {
+        "evBattery": {
+          "sourceNodeId": "input",
+          "sourceField": "evBattery"
+        },
+        "target": {
+          "sourceNodeId": "input",
+          "sourceField": "target"
+        },
+        "ppv": {
+          "sourceNodeId": "input",
+          "sourceField": "ppv"
+        },
+        "sunHoursLeft": {
+          "sourceNodeId": "input",
+          "sourceField": "sunHoursLeft"
+        },
+        "forecast": {
+          "sourceNodeId": "input",
+          "sourceField": "forecast"
+        }
+      }
+    },
+    {
+      "id": "resultEstimate",
+      "type": "Result",
+      "label": "Worth-It Estimate",
+      "position": {
+        "x": 460,
+        "y": 360
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "estimate",
+          "sourceField": "$"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e0",
+      "source": "input",
+      "target": "thresholds",
+      "targetHandle": "homeSoc"
+    },
+    {
+      "id": "e1",
+      "source": "thresholds",
+      "target": "resultOk",
+      "sourceHandle": "ok"
+    },
+    {
+      "id": "e2",
+      "source": "thresholds",
+      "target": "resultSkip",
+      "sourceHandle": "skip"
+    },
+    {
+      "id": "e3",
+      "source": "input",
+      "target": "estimate",
+      "targetHandle": "evBattery"
+    },
+    {
+      "id": "e4",
+      "source": "estimate",
+      "target": "resultEstimate",
+      "targetHandle": "data"
+    }
+  ],
+  "createdAt": "2026-07-03T00:00:00Z",
+  "updatedAt": "2026-07-03T00:00:00Z"
+}

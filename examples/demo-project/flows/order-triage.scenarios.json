@@ -1,0 +1,5 @@
+[
+  { "id": "s-standard", "name": "standard-order", "description": "Small order, no rush.", "input": { "total": 40, "express": true } },
+  { "id": "s-priority-rush", "name": "priority-rush", "description": "Mid-size order with express shipping.", "input": { "total": 250, "express": true } },
+  { "id": "s-vip", "name": "vip", "description": "Big order.", "input": { "total": 900, "express": false } }
+]

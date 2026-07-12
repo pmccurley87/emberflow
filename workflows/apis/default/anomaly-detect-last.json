@@ -1,0 +1,74 @@
+{
+  "id": "anomaly-detect-last",
+  "name": "Detect · Last Point",
+  "version": 1,
+  "folder": "Anomaly API",
+  "nodes": [
+    {
+      "id": "build",
+      "type": "BuildSeries",
+      "label": "Build Series (spike at end)",
+      "position": {
+        "x": 60,
+        "y": 200
+      },
+      "config": {
+        "points": 14,
+        "baseValue": 50,
+        "spikeIndex": 13,
+        "spikeFactor": 4
+      }
+    },
+    {
+      "id": "detect",
+      "type": "DetectLastPoint",
+      "label": "Detect Last Point",
+      "position": {
+        "x": 310,
+        "y": 200
+      },
+      "config": {
+        "apiKey": "dev-emberflow",
+        "sensitivity": 80
+      },
+      "inputMap": {
+        "series": {
+          "sourceNodeId": "build",
+          "sourceField": "series"
+        }
+      }
+    },
+    {
+      "id": "result",
+      "type": "Result",
+      "label": "Verdict",
+      "position": {
+        "x": 560,
+        "y": 200
+      },
+      "config": {},
+      "inputMap": {
+        "data": {
+          "sourceNodeId": "detect",
+          "sourceField": "$"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "build",
+      "target": "detect",
+      "targetHandle": "series"
+    },
+    {
+      "id": "e2",
+      "source": "detect",
+      "target": "result",
+      "targetHandle": "data"
+    }
+  ],
+  "createdAt": "2026-07-02T00:00:00Z",
+  "updatedAt": "2026-07-02T00:00:00Z"
+}

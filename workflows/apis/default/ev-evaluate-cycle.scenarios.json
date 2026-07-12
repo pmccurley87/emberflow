@@ -1,0 +1,363 @@
+[
+  {
+    "id": "scn-sunny-start",
+    "name": "sunny-start",
+    "description": "Strong export (2500W), home 80%, EV 60% → start charge.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 3000,
+      "loadPower": 500,
+      "gridExport": 2500,
+      "homeSoc": 80,
+      "evBattery": 60,
+      "pluggedIn": true,
+      "charging": false,
+      "state": "idle",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 20,
+        "strongHoursLeft": 5,
+        "tomorrowKwh": 25
+      }
+    }
+  },
+  {
+    "id": "scn-cloudy-hold",
+    "name": "cloudy-hold",
+    "description": "Flat 900W surplus below the 1200W buffer start → hold waiting.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 1400,
+      "loadPower": 500,
+      "gridExport": 0,
+      "homeSoc": 50,
+      "evBattery": 60,
+      "pluggedIn": true,
+      "charging": false,
+      "state": "waiting",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 8,
+        "strongHoursLeft": 2,
+        "tomorrowKwh": 15
+      }
+    }
+  },
+  {
+    "id": "scn-golden-hour-start",
+    "name": "golden-hour-start",
+    "description": "~1h to sunset pulls start to 800W; 900W surplus → start.",
+    "input": {
+      "now": "2026-07-02T19:06:00Z",
+      "ppv": 1000,
+      "loadPower": 100,
+      "gridExport": 0,
+      "homeSoc": 50,
+      "evBattery": 60,
+      "pluggedIn": true,
+      "charging": false,
+      "state": "idle",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 2,
+        "strongHoursLeft": 1,
+        "tomorrowKwh": 15
+      }
+    }
+  },
+  {
+    "id": "scn-predictive-export",
+    "name": "predictive-export",
+    "description": "Home 95% + ppv 3000W → predictive 500W start; 600W surplus → start.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 3000,
+      "loadPower": 200,
+      "gridExport": 600,
+      "homeSoc": 95,
+      "evBattery": 60,
+      "pluggedIn": true,
+      "charging": false,
+      "state": "idle",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 20,
+        "strongHoursLeft": 5,
+        "tomorrowKwh": 25
+      }
+    }
+  },
+  {
+    "id": "scn-urgent-ev",
+    "name": "urgent-ev",
+    "description": "EV 40% (<50) → urgent 1200W start; 1300W surplus → start.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 1800,
+      "loadPower": 500,
+      "gridExport": 0,
+      "homeSoc": 50,
+      "evBattery": 40,
+      "pluggedIn": true,
+      "charging": false,
+      "state": "idle",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 15,
+        "strongHoursLeft": 4,
+        "tomorrowKwh": 20
+      }
+    }
+  },
+  {
+    "id": "scn-flat-home-blocked",
+    "name": "flat-home-blocked",
+    "description": "Flat home 10% keeps 2000W start; 1500W surplus → hold waiting.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 2000,
+      "loadPower": 500,
+      "gridExport": 0,
+      "homeSoc": 10,
+      "evBattery": 60,
+      "pluggedIn": true,
+      "charging": false,
+      "state": "waiting",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 15,
+        "strongHoursLeft": 4,
+        "tomorrowKwh": 20
+      }
+    }
+  },
+  {
+    "id": "scn-not-worth-it",
+    "name": "not-worth-it",
+    "description": "EV 70% with only ~0.8kWh solar left → worth-it skip.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 800,
+      "loadPower": 300,
+      "gridExport": 0,
+      "homeSoc": 50,
+      "evBattery": 70,
+      "pluggedIn": true,
+      "charging": false,
+      "state": "idle",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 0.8,
+        "strongHoursLeft": 0,
+        "tomorrowKwh": 20
+      }
+    }
+  },
+  {
+    "id": "scn-charging-continue",
+    "name": "charging-continue",
+    "description": "Already charging, 900W above the 400W stop → hold charging.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 1400,
+      "loadPower": 500,
+      "gridExport": 0,
+      "homeSoc": 50,
+      "evBattery": 60,
+      "pluggedIn": true,
+      "charging": true,
+      "state": "charging",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 8,
+        "strongHoursLeft": 2,
+        "tomorrowKwh": 15
+      }
+    }
+  },
+  {
+    "id": "scn-charging-stop",
+    "name": "charging-stop",
+    "description": "Charging but surplus fell to 300W (<400 stop) → stop charge.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 800,
+      "loadPower": 500,
+      "gridExport": 0,
+      "homeSoc": 50,
+      "evBattery": 60,
+      "pluggedIn": true,
+      "charging": true,
+      "state": "charging",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 6,
+        "strongHoursLeft": 1,
+        "tomorrowKwh": 15
+      }
+    }
+  },
+  {
+    "id": "scn-unscheduled-stop",
+    "name": "unscheduled-stop",
+    "description": "Car charging but state idle and 700W < 1200W start → unscheduled stop.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 1200,
+      "loadPower": 500,
+      "gridExport": 0,
+      "homeSoc": 80,
+      "evBattery": 60,
+      "pluggedIn": true,
+      "charging": true,
+      "state": "idle",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 10,
+        "strongHoursLeft": 3,
+        "tomorrowKwh": 15
+      }
+    }
+  },
+  {
+    "id": "scn-reconcile-adopt",
+    "name": "reconcile-adopt",
+    "description": "Car charging, state waiting, 2500W clears start → adopt the session.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 3000,
+      "loadPower": 500,
+      "gridExport": 2500,
+      "homeSoc": 80,
+      "evBattery": 60,
+      "pluggedIn": true,
+      "charging": true,
+      "state": "waiting",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 20,
+        "strongHoursLeft": 5,
+        "tomorrowKwh": 25
+      }
+    }
+  },
+  {
+    "id": "scn-ev-at-target",
+    "name": "ev-at-target",
+    "description": "EV 91% ≥ 90% solar target → at-target stop.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 2000,
+      "loadPower": 500,
+      "gridExport": 0,
+      "homeSoc": 80,
+      "evBattery": 91,
+      "pluggedIn": true,
+      "charging": false,
+      "state": "idle",
+      "readings": [],
+      "forecast": null
+    }
+  },
+  {
+    "id": "scn-unplugged",
+    "name": "unplugged",
+    "description": "EV not plugged in → notPlugged.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 2000,
+      "loadPower": 500,
+      "gridExport": 0,
+      "homeSoc": 80,
+      "evBattery": 60,
+      "pluggedIn": false,
+      "charging": false,
+      "state": "idle",
+      "readings": [],
+      "forecast": null
+    }
+  },
+  {
+    "id": "scn-sunset-stop",
+    "name": "sunset-stop",
+    "description": "now 22:00 (sun set), charging → off-hours stop.",
+    "input": {
+      "now": "2026-07-02T22:00:00Z",
+      "ppv": 0,
+      "loadPower": 400,
+      "gridExport": 0,
+      "homeSoc": 50,
+      "evBattery": 60,
+      "pluggedIn": true,
+      "charging": true,
+      "state": "charging",
+      "readings": [],
+      "forecast": null
+    }
+  },
+  {
+    "id": "scn-trend-rising",
+    "name": "trend-rising",
+    "description": "Readings ramp +300W/cycle → trend override lowers start to 1000W; 1100W surplus → start.",
+    "input": {
+      "now": "2026-07-02T13:00:00Z",
+      "ppv": 1600,
+      "loadPower": 500,
+      "gridExport": 0,
+      "homeSoc": 10,
+      "evBattery": 60,
+      "pluggedIn": true,
+      "charging": false,
+      "state": "idle",
+      "readings": [
+        {
+          "surplus": 200,
+          "homeSoc": 10,
+          "ppv": 800
+        },
+        {
+          "surplus": 500,
+          "homeSoc": 10,
+          "ppv": 1100
+        },
+        {
+          "surplus": 800,
+          "homeSoc": 10,
+          "ppv": 1400
+        },
+        {
+          "surplus": 1100,
+          "homeSoc": 10,
+          "ppv": 1600
+        }
+      ],
+      "forecast": {
+        "remainingKwh": 15,
+        "strongHoursLeft": 4,
+        "tomorrowKwh": 20
+      }
+    }
+  },
+  {
+    "id": "scn-night-charge",
+    "name": "night-charge",
+    "description": "now 23:30 (night window), EV 30% (<35) → Night Charge subflow charges.",
+    "input": {
+      "now": "2026-07-02T23:30:00Z",
+      "ppv": 0,
+      "loadPower": 400,
+      "gridExport": 0,
+      "homeSoc": 50,
+      "evBattery": 30,
+      "pluggedIn": true,
+      "charging": false,
+      "state": "idle",
+      "readings": [],
+      "forecast": {
+        "remainingKwh": 0,
+        "strongHoursLeft": 0,
+        "tomorrowKwh": 24
+      }
+    }
+  }
+]

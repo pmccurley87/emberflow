@@ -1,0 +1,74 @@
+[
+  {
+    "id": "scn-critical-35",
+    "name": "critical-35",
+    "description": "EV 30% (<35) at 23:30 → charge regardless of forecast.",
+    "input": {
+      "evBattery": 30,
+      "pluggedIn": true,
+      "tomorrowKwh": 24,
+      "alreadyTriggeredToday": false,
+      "now": "2026-07-02T23:30:00Z"
+    }
+  },
+  {
+    "id": "scn-moderate-poor-forecast",
+    "name": "moderate-poor-forecast",
+    "description": "EV 55% with poor tomorrow (6kWh) at night → charge.",
+    "input": {
+      "evBattery": 55,
+      "pluggedIn": true,
+      "tomorrowKwh": 6,
+      "alreadyTriggeredToday": false,
+      "now": "2026-07-02T23:30:00Z"
+    }
+  },
+  {
+    "id": "scn-moderate-good-forecast",
+    "name": "moderate-good-forecast",
+    "description": "EV 55% with good tomorrow (20kWh) → skip.",
+    "input": {
+      "evBattery": 55,
+      "pluggedIn": true,
+      "tomorrowKwh": 20,
+      "alreadyTriggeredToday": false,
+      "now": "2026-07-02T23:30:00Z"
+    }
+  },
+  {
+    "id": "scn-wrong-hour",
+    "name": "wrong-hour",
+    "description": "EV 30% but 14:00 (outside 23–05) → skip.",
+    "input": {
+      "evBattery": 30,
+      "pluggedIn": true,
+      "tomorrowKwh": 6,
+      "alreadyTriggeredToday": false,
+      "now": "2026-07-02T14:00:00Z"
+    }
+  },
+  {
+    "id": "scn-already-triggered",
+    "name": "already-triggered",
+    "description": "EV 30% at night but already triggered today → skip.",
+    "input": {
+      "evBattery": 30,
+      "pluggedIn": true,
+      "tomorrowKwh": 6,
+      "alreadyTriggeredToday": true,
+      "now": "2026-07-02T23:30:00Z"
+    }
+  },
+  {
+    "id": "scn-unplugged-night",
+    "name": "unplugged-night",
+    "description": "EV 30% at night but not plugged in → skip.",
+    "input": {
+      "evBattery": 30,
+      "pluggedIn": false,
+      "tomorrowKwh": 6,
+      "alreadyTriggeredToday": false,
+      "now": "2026-07-02T23:30:00Z"
+    }
+  }
+]
