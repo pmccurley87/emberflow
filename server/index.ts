@@ -1,4 +1,6 @@
 import { existsSync, watch } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type Request, type Response } from 'express';
@@ -8,6 +10,7 @@ import {
   mergeMocks,
   validateFlow,
   verifyArtifact,
+  type LogLine,
   type ScenarioDefinition,
   type WorkflowDefinition,
 } from '../src/engine';
@@ -730,6 +733,82 @@ api.post('/runs', async (req: Request, res: Response) => {
   res.status(201).json({ runId });
 });
 
+// Run a single node in isolation (studio's "Run node" affordance). Executes the
+// node's implementation in-process against the resolved environment's
+// secrets/vars, honouring safe mode via resolveRunSafety, and redacts the
+// output through the same choke point runs use. Unknown type → 404. The studio
+// bundles no implementations, so this is the ONLY path to a lone node run.
+api.post('/node-run', async (req: Request, res: Response) => {
+  const { type, input, config, environment, safeMode, confirm } = req.body ?? {};
+  if (typeof type !== 'string' || type.length === 0) {
+    res.status(400).json({ error: 'Body must include a node "type"' });
+    return;
+  }
+  if (input !== undefined && (typeof input !== 'object' || input === null || Array.isArray(input))) {
+    res.status(400).json({ error: 'input must be a plain object' });
+    return;
+  }
+  if (config !== undefined && (typeof config !== 'object' || config === null || Array.isArray(config))) {
+    res.status(400).json({ error: 'config must be a plain object' });
+    return;
+  }
+  if (environment !== undefined && typeof environment !== 'string') {
+    res.status(400).json({ error: 'environment must be a string' });
+    return;
+  }
+  if (safeMode !== undefined && typeof safeMode !== 'boolean') {
+    res.status(400).json({ error: 'safeMode must be a boolean' });
+    return;
+  }
+  if (!runs.executionRegistry.has(type)) {
+    res.status(404).json({ error: `Unknown node type: ${type}` });
+    return;
+  }
+  const environmentName = environment ?? environmentsFile.defaultEnvironment;
+  const environmentDef = environmentsFile.environments[environmentName];
+  if (!environmentDef) {
+    res.status(400).json({ error: `Unknown environment: '${environmentName}'` });
+    return;
+  }
+  const safety = resolveRunSafety(environmentName, environmentDef, { safeMode, confirm });
+  if (!safety.ok) {
+    res.status(400).json({ error: safety.error });
+    return;
+  }
+
+  const { implementation } = runs.executionRegistry.get(type);
+  const runId = `node-run-${randomUUID().slice(0, 8)}`;
+  const logs: LogLine[] = [];
+  const log = (level: LogLine['level'], message: string): void => {
+    logs.push({ timestamp: new Date().toISOString(), level, runId, message });
+  };
+  const nodeInput = (input ?? {}) as Record<string, unknown>;
+
+  let result: { output?: unknown; error?: string; logs: LogLine[] };
+  try {
+    const output = await implementation({
+      input: nodeInput,
+      config: (config ?? {}) as Record<string, unknown>,
+      secrets: environmentDef.secrets,
+      vars: environmentDef.vars,
+      environment: environmentName,
+      safeMode: safety.safeMode,
+      runInput: nodeInput,
+      log,
+      // A node run in isolation has no flow context to resolve child workflows.
+      runSubflow: async () => ({
+        status: 'failed',
+        error: 'Subflow nodes cannot be run in isolation — run the whole operation instead',
+      }),
+    });
+    result = { output, logs };
+  } catch (err) {
+    result = { error: err instanceof Error ? err.message : String(err), logs };
+  }
+  // Redact secret values from the output AND captured logs before responding.
+  res.json(redactSecrets(result, environmentDef.secrets));
+});
+
 api.post('/runs/:id/step', async (req, res) => {
   const handle = runs.get(req.params.id);
   if (!handle) {
@@ -803,9 +882,11 @@ api.get('/setup-status', (_req: Request, res: Response) => {
       protectedCount: envList.filter((e) => e.protected).length,
       anyAuthConfigured: envList.some((e) => !!e.auth),
     },
+    // Skills count as installed at either scope: repo (`init --local`) or the
+    // user's home dir (`init --global`) — both teach the agent equally.
     skills: {
-      claude: existsSync(join(root, '.claude', 'skills', 'emberflow-basics', 'SKILL.md')),
-      codex: existsSync(join(root, '.codex', 'skills', 'emberflow-basics', 'SKILL.md')),
+      claude: skillInstalled(root, 'claude'),
+      codex: skillInstalled(root, 'codex'),
     },
     language: project?.language ?? 'typescript',
     ops: { count: ops.length, onlyHello },
@@ -815,6 +896,13 @@ api.get('/setup-status', (_req: Request, res: Response) => {
     infrastructure: infraStatus(),
   });
 });
+
+/** Whether the emberflow-basics skill exists for a harness, repo- or home-scoped. */
+function skillInstalled(root: string, harness: 'claude' | 'codex'): boolean {
+  return [root, homedir()].some((base) =>
+    existsSync(join(base, `.${harness}`, 'skills', 'emberflow-basics', 'SKILL.md')),
+  );
+}
 
 /** The /setup-status `infrastructure` field: presence + a shallow summary. */
 function infraStatus(): { present: boolean; scannedAt?: string; itemCount?: number } {
@@ -965,7 +1053,7 @@ const operationRunEnv = {
 // operation whose http.path collides with one of these would silently never
 // be reached (the internal route, registered first, always wins) — guarded
 // against below rather than left as a silent trap.
-const RESERVED_ROOT_PATHS = ['/healthz', '/nodes', '/samples', '/environments', '/workflows', '/runs', '/agent', '/serving'];
+const RESERVED_ROOT_PATHS = ['/healthz', '/nodes', '/samples', '/environments', '/workflows', '/runs', '/node-run', '/agent', '/serving'];
 
 function collidesWithReservedPath(path: string): boolean {
   return RESERVED_ROOT_PATHS.some((reserved) => path === reserved || path.startsWith(`${reserved}/`));

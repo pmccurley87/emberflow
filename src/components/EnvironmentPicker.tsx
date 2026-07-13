@@ -46,7 +46,9 @@ export function EnvironmentPicker() {
   const offline = environments.length === 0;
   // The unmissable state: writes will execute against a protected environment.
   const live = protectedEnv && !safeMode;
-  const label = selected || 'browser';
+  // Runs are always server-side; with the runner down there is no environment
+  // to point at, so the picker says so plainly rather than naming a fallback.
+  const label = runnerOnline === false ? 'Runner offline' : selected || 'default';
 
   const toggleSafe = () => {
     if (safeMode) {
@@ -174,7 +176,7 @@ export function EnvironmentPicker() {
             ) : (
               <div className="px-2.5 py-3 text-[12px] text-muted-foreground">
                 {runnerOnline === false
-                  ? 'Runner offline — runs execute in the browser as environment "browser".'
+                  ? 'Runner offline — start it with `npx emberflow dev` to run and pick environments.'
                   : 'Loading environments…'}
               </div>
             )

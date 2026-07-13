@@ -1,15 +1,11 @@
 import { create } from 'zustand';
-import { InMemoryTraceSink, runOutput, startRun } from '../engine';
+import { InMemoryTraceSink } from '../engine/trace';
+import { NodeRegistry } from '../engine/registry';
+import type { FlowRun } from '../engine/executor';
 import type {
-  FieldMapping, FlowRun, LogLine, NodeRegistry, ScenarioDefinition, StartRunOptions,
-  SubflowResult, WorkflowDefinition, WorkflowNode, WorkflowRun,
-} from '../engine';
-import { createDefaultRegistry } from '../nodes';
-import { createLoginFlow } from '../flows/login-flow';
-import { createWeatherFlow } from '../flows/weather-flow';
-import { createAnomalyFlows } from '../flows/anomaly-flows';
-import { createCitySweepFlow } from '../flows/city-sweep-flow';
-import { createPradarFlows } from '../flows/pradar-flows';
+  FieldMapping, LogLine, ScenarioDefinition,
+  WorkflowDefinition, WorkflowNode, WorkflowRun,
+} from '../engine/types';
 import { loadWorkspace, parseFlow, saveWorkspace, serializeFlow } from './persistence';
 import { fetchNodeMeta } from './nodeMeta';
 import {
@@ -22,6 +18,7 @@ import {
   loginEnvironment as loginEnvironmentOnServer,
   putWorkflow,
   runnerHealthy,
+  runNodeOnServer,
   setEnvironmentAuth as setEnvironmentAuthOnServer,
   setEnvironmentSecret as setEnvironmentSecretOnServer,
   setServingMode as setServingModeOnServer,
@@ -35,6 +32,8 @@ import type {
 } from './serverRunner';
 import { cancelAgent, fetchAgentDiff, revertAgent, startAgent, streamAgent } from './agentClient';
 import type { AgentEvent, AgentIntent, AgentKind, StartAgentOptions } from './agentClient';
+import { fetchSetupStatus } from './setupClient';
+import type { SetupStatus } from './setupClient';
 
 export interface WorkflowSummary {
   id: string;
@@ -114,12 +113,8 @@ interface BuilderState {
   activeRun: FlowRun | null;
   dockTab: 'logs' | 'output' | 'infra';
   setDockTab(tab: 'logs' | 'output' | 'infra'): void;
-  /** 'auto' resolves to the runner when it's reachable, browser otherwise. */
-  executionMode: 'auto' | 'browser' | 'server';
-  setExecutionMode(mode: 'auto' | 'browser' | 'server'): void;
-  /** Where the next run will actually execute. */
-  effectiveMode(): 'browser' | 'server';
-  /** null = not yet checked. */
+  /** null = not yet checked. Runs are always server-side; when the runner is
+   *  offline the studio surfaces a calm offline state instead of executing. */
   runnerOnline: boolean | null;
   /** True when the reachable runner is serving EMBERFLOW_MOCK responses
    *  (from /healthz's `mock` field) rather than live execution. False when
@@ -136,7 +131,7 @@ interface BuilderState {
   environments: EnvironmentSummary[];
   /** The runner's default environment name. */
   environmentsDefault: string;
-  /** The environment the next run points at (persisted, like executionMode). */
+  /** The environment the next run points at (persisted). */
   selectedEnvironment: string;
   /** When on, mutation nodes dry-run their writes (persisted). */
   safeMode: boolean;
@@ -197,8 +192,10 @@ interface BuilderState {
   beginEnvironmentSetup(): void;
   /** Dispatch the infrastructure scout (scout-infrastructure intent): reads the
    *  project's deps/config/ORM/env-refs and writes emberflow/infrastructure.json.
-   *  Shared by the Welcome checklist and the Dock's Infra tab empty state. */
-  beginInfrastructureScout(): void;
+   *  Shared by the Welcome checklist and the Dock's Infra tab empty state. An
+   *  optional free-text `instruction` (from the Infrastructure modal's "Update
+   *  with AI") amends the manifest; empty/omitted runs a full rescan. */
+  beginInfrastructureScout(instruction?: string): void;
   /** Whether the first-run Welcome/Setup checklist dialog is open. Auto-opened
    *  on a fresh project (see WelcomeDialog); always reachable from the Toolbar. */
   welcomeOpen: boolean;
@@ -207,6 +204,15 @@ interface BuilderState {
    *  checklist's "coding agent" row can deep-link into it. */
   settingsOpen: boolean;
   setSettingsOpen(open: boolean): void;
+  /** True while Settings was deep-linked from the Welcome checklist — the
+   *  dialog then shows a back arrow that returns to the checklist. Cleared on
+   *  any close so a later toolbar-opened Settings doesn't inherit it. */
+  settingsFromWelcome: boolean;
+  openSettingsFromWelcome(): void;
+  /** Latest /setup-status snapshot. WelcomeDialog refreshes it on mount and on
+   *  open; shared here so the StatusBar's setup-progress chip stays in sync. */
+  setupStatus: SetupStatus | null;
+  refreshSetupStatus(): Promise<SetupStatus | null>;
   /** Open the agent panel (no toggle). */
   openAgentPanel(): void;
   /** Where the run console docks (persisted). Default 'right'. */
@@ -341,8 +347,9 @@ interface BuilderState {
   pinNodeOutput(nodeId: string, output: unknown): void;
   unpinNode(nodeId: string): void;
   /**
-   * Execute one node directly against the given input (browser-side),
-   * capturing logs and recording a trace sample. Does not touch run state.
+   * Execute one node in isolation against the given input on the runner (POST
+   * /node-run), capturing logs and recording a local trace sample. Does not
+   * touch run state. Requires the runner to be online.
    */
   runNodeIsolated(
     nodeId: string,
@@ -359,35 +366,11 @@ interface BuilderState {
   importFlow(json: string): void;
 }
 
-const registry = createDefaultRegistry();
-
-/** Max depth of nested Subflow calls (ancestry chain length) before a run fails. */
-export const SUBFLOW_DEPTH_CAP = 8;
-
-/**
- * A prefixed copy of a child-run log line, folded into the parent's stream:
- * label becomes "<ChildFlow> › <nodeLabel>" and the console id is namespaced
- * under the calling Subflow node so console clicks don't collide with parent
- * ids.
- */
-function prefixSubflowLog(line: LogLine, childName: string, callerNodeId: string): LogLine {
-  return {
-    ...line,
-    nodeLabel: `${childName} › ${line.nodeLabel ?? ''}`,
-    nodeId: line.nodeId ? `${callerNodeId}/${line.nodeId}` : callerNodeId,
-  };
-}
-
-/** Build the cycle/depth error a subflow guard reports for a given ancestry. */
-function subflowGuardError(ancestry: string[], workflowId: string): string | null {
-  if (ancestry.length >= SUBFLOW_DEPTH_CAP) {
-    return `subflow depth cap (${SUBFLOW_DEPTH_CAP}) exceeded`;
-  }
-  if (ancestry.includes(workflowId)) {
-    return `subflow cycle: ${[...ancestry, workflowId].join(' → ')}`;
-  }
-  return null;
-}
+// The studio registry is definitions-only: it carries node metadata (labels,
+// schemas, categories) synced from the runner via syncNodeMeta, never the node
+// implementations. All execution happens on the runner — the studio is a pure
+// client. syncNodeMeta populates this from GET /api/nodes.
+const registry = new NodeRegistry();
 
 function touched(flow: WorkflowDefinition): WorkflowDefinition {
   return { ...flow, updatedAt: new Date().toISOString() };
@@ -440,29 +423,15 @@ function emptyFlow(): WorkflowDefinition {
   };
 }
 
+// The workspace comes from the runner (adopted on first health check via
+// syncFromRunner). At boot we hydrate only from any locally-persisted workspace;
+// with none, we open an empty flow. No example flows are seeded client-side —
+// the studio bundles no node implementations, so it can't execute them anyway.
 const workspace = loadWorkspace();
-const exampleFlows = [
-  createWeatherFlow(),
-  createLoginFlow(),
-  ...createAnomalyFlows(),
-  createCitySweepFlow(),
-  ...createPradarFlows(),
-];
-// Saved flows win; example flows the workspace doesn't know yet are merged in.
-const exampleById = new Map(exampleFlows.map((f) => [f.id, f]));
-const savedFlows = (workspace?.flows ?? []).map((f) => {
-  // Backfill the preferred environment onto older saved copies of built-in
-  // flows that predate the field, without clobbering user edits.
-  if (f.environment === undefined && exampleById.get(f.id)?.environment) {
-    return { ...f, environment: exampleById.get(f.id)!.environment };
-  }
-  return f;
-});
-const savedIds = new Set(savedFlows.map((f) => f.id));
-const initialFlows = [...savedFlows, ...exampleFlows.filter((f) => !savedIds.has(f.id))];
+const savedFlows = workspace?.flows ?? [];
 const initialFlow =
-  initialFlows.find((f) => f.id === workspace?.activeId) ?? initialFlows[0];
-const initialShelf = initialFlows.filter((f) => f.id !== initialFlow.id);
+  savedFlows.find((f) => f.id === workspace?.activeId) ?? savedFlows[0] ?? emptyFlow();
+const initialShelf = savedFlows.filter((f) => f.id !== initialFlow.id);
 
 const ENV_KEY = 'emberflow.environment';
 const SAFE_KEY = 'emberflow.safeMode';
@@ -540,10 +509,6 @@ let flowEnvSynced = false;
 let stepFollow = false;
 
 export const useBuilderStore = create<BuilderState>((set, get) => {
-  const snapshotRun = (handle: FlowRun): void => {
-    set({ run: { ...handle.run, nodeStates: { ...handle.run.nodeStates } } });
-  };
-
   /** Whether the selected environment is protected (writes are expensive there). */
   const selectedEnvProtected = (): boolean => {
     const s = get();
@@ -581,119 +546,6 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     if (!preferred || preferred === s.selectedEnvironment) return;
     if (!s.environments.some((e) => e.name === preferred)) return;
     get().selectEnvironment(preferred);
-  };
-
-  // Selection follows the step cursor: pick the most recently completed node.
-  const selectLatestCompleted = () => {
-    const states = Object.entries(get().run?.nodeStates ?? {});
-    let latest: string | null = null;
-    let latestAt = '';
-    for (const [id, st] of states) {
-      if ((st.status === 'succeeded' || st.status === 'failed') && st.completedAt && st.completedAt >= latestAt) {
-        latestAt = st.completedAt;
-        latest = id;
-      }
-    }
-    if (latest) set({ selectedNodeId: latest });
-  };
-
-  /**
-   * Browser-side Subflow runner. Resolves the child workflow across the active
-   * flow + shelf, runs it to completion on the same registry (browser env:
-   * empty secrets/vars, honouring safe mode), forwards its logs into the parent
-   * stream (prefixed), and returns its collected Result output. The ancestry
-   * chain — threaded through this closure, not global state — enforces the
-   * depth cap and catches A→B→A cycles.
-   */
-  const makeSubflowRunner = (
-    ancestry: string[],
-  ): NonNullable<StartRunOptions['subflowRunner']> => {
-    return async (workflowId, input, callerNodeId): Promise<SubflowResult> => {
-      const guard = subflowGuardError(ancestry, workflowId);
-      if (guard) return { status: 'failed', error: guard };
-      const s = get();
-      const childFlow = [s.flow, ...s.shelf].find((f) => f.id === workflowId);
-      if (!childFlow) return { status: 'failed', error: `Unknown workflow: ${workflowId}` };
-      try {
-        const handle = startRun({
-          flow: childFlow,
-          registry: s.registry,
-          trace: s.trace,
-          pins: pinsOf(childFlow),
-          input,
-          environment: 'browser',
-          safeMode: s.safeMode,
-          subflowRunner: makeSubflowRunner([...ancestry, workflowId]),
-          events: {
-            onLog: (line) =>
-              set((st) => ({
-                logs: [...st.logs, prefixSubflowLog(line, childFlow.name, callerNodeId)],
-              })),
-          },
-        });
-        const childRun = await handle.runToEnd();
-        if (childRun.status !== 'succeeded') {
-          return { status: 'failed', error: `subflow "${childFlow.name}" ${childRun.status}` };
-        }
-        return { status: 'succeeded', output: runOutput(childRun, childFlow) };
-      } catch (err) {
-        return { status: 'failed', error: err instanceof Error ? err.message : String(err) };
-      }
-    };
-  };
-
-  const ensureRun = (
-    input?: Record<string, unknown>,
-    scenarioMocks?: Record<string, unknown>,
-  ): FlowRun | null => {
-    const existing = get().activeRun;
-    if (existing && existing.run.status === 'running') return existing;
-    const mockRun = get().runnerMock;
-    set({ activeRunMock: mockRun });
-    try {
-      const handle = startRun({
-        flow: get().flow,
-        registry: get().registry,
-        trace: get().trace,
-        pins: pinsOf(get().flow),
-        input,
-        // Browser-engine runs honour Mock mode the same way the runner does:
-        // op-level mocks under any scenario's own map, fail-loud at infra.
-        ...(mockRun ? { mockRun: true, mocks: { ...get().flow.mocks, ...scenarioMocks } } : {}),
-        // Browser execution has no env file: it runs as environment 'browser'
-        // (empty secrets/vars) but still honours safe mode over HTTP.
-        environment: 'browser',
-        safeMode: get().safeMode,
-        subflowRunner: makeSubflowRunner([get().flow.id]),
-        events: {
-          onNodeStateChange: () => snapshotRun(handle),
-          onLog: (line) => set((s) => ({ logs: [...s.logs, line] })),
-          onRunFinished: () => {
-            snapshotRun(handle);
-            get().recordRun({ ...handle.run, nodeStates: { ...handle.run.nodeStates } });
-            set({ activeRun: null });
-            revertUnsafeAfterRun();
-          },
-        },
-      });
-      set({ activeRun: handle, logs: [] });
-      snapshotRun(handle);
-      return handle;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      set((s) => ({
-        logs: [
-          ...s.logs,
-          {
-            timestamp: new Date().toISOString(),
-            level: 'error',
-            runId: 'validation',
-            message,
-          },
-        ],
-      }));
-      return null;
-    }
   };
 
   const reportRunError = (message: string): void => {
@@ -779,6 +631,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     agentEnvSetup: false,
     welcomeOpen: false,
     settingsOpen: false,
+    settingsFromWelcome: false,
+    setupStatus: null,
     viewRegister: initialViewRegister,
     consolePosition: initialConsolePosition,
     runConsoleDismissedId: null,
@@ -796,11 +650,6 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       set({ agentChoice: choice });
       persistAgentChoice(choice);
     },
-    executionMode: (() => {
-      const saved =
-        typeof localStorage !== 'undefined' ? localStorage.getItem('emberflow.mode') : null;
-      return saved === 'browser' || saved === 'server' ? saved : 'auto';
-    })(),
     runnerOnline: null,
     runnerMock: false,
     workspaceSource: 'local',
@@ -891,18 +740,6 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       set({ safeMode: on });
       persistSafeMode(on);
       return true;
-    },
-
-    setExecutionMode(mode) {
-      set({ executionMode: mode });
-      if (typeof localStorage !== 'undefined') localStorage.setItem('emberflow.mode', mode);
-      if (mode !== 'browser') void get().checkRunner();
-    },
-
-    effectiveMode() {
-      const s = get();
-      if (s.executionMode === 'auto') return s.runnerOnline ? 'server' : 'browser';
-      return s.executionMode;
     },
 
     async setServingMode(mode) {
@@ -1197,11 +1034,16 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       set({ agentPanelOpen: true, agentEnvSetup: true });
     },
 
-    beginInfrastructureScout() {
+    beginInfrastructureScout(instruction) {
+      // Defensive: callers wired as onClick handlers leak a MouseEvent as the
+      // first arg — anything that isn't a string means "full rescan".
+      const amendment = typeof instruction === 'string' ? instruction.trim() : '';
       void get().runAgent({
         action: 'scout-infrastructure',
         instruction:
-          "Scan this project's dependencies, config files, ORM schemas, env-var references and HTTP clients, and write emberflow/infrastructure.json describing the databases, APIs and providers it already uses.",
+          amendment && amendment.length > 0
+            ? amendment
+            : "Scan this project's dependencies, config files, ORM schemas, env-var references and HTTP clients, and write emberflow/infrastructure.json describing the databases, APIs and providers it already uses.",
       });
     },
 
@@ -1210,7 +1052,17 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     },
 
     setSettingsOpen(open) {
-      set({ settingsOpen: open });
+      set(open ? { settingsOpen: true } : { settingsOpen: false, settingsFromWelcome: false });
+    },
+
+    openSettingsFromWelcome() {
+      set({ welcomeOpen: false, settingsOpen: true, settingsFromWelcome: true });
+    },
+
+    async refreshSetupStatus() {
+      const status = await fetchSetupStatus();
+      if (status) set({ setupStatus: status });
+      return status;
     },
 
     openAgentPanel() {
@@ -1567,57 +1419,45 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       const s = get();
       const node = s.flow.nodes.find((n) => n.id === nodeId);
       if (!node) return { error: `Unknown node: ${nodeId}`, logs: [] };
-      if (!s.registry.has(node.type)) {
-        return { error: `Unknown node type: ${node.type}`, logs: [] };
-      }
-      const { implementation } = s.registry.get(node.type);
-      const logs: LogLine[] = [];
-      const runId = `isolated-${crypto.randomUUID().slice(0, 8)}`;
-      const log = (level: LogLine['level'], message: string): void => {
-        logs.push({
-          timestamp: new Date().toISOString(),
-          level,
-          runId,
-          nodeId: node.id,
-          nodeLabel: node.label,
-          message,
-        });
-      };
+      // Isolated node runs execute on the runner (POST /node-run) against the
+      // selected environment's secrets/vars, honouring safe mode — the studio
+      // bundles no implementations. Runner offline → surface the offline notice.
       const startedAt = new Date().toISOString();
-      const sample = (status: 'succeeded' | 'failed', output?: unknown) => {
-        s.trace.record({
-          id: crypto.randomUUID(),
-          workflowId: s.flow.id,
-          runId,
-          nodeId: node.id,
-          nodeType: node.type,
-          nodeLabel: node.label,
-          input,
-          output,
-          status,
-          startedAt,
-          completedAt: new Date().toISOString(),
-        });
-      };
+      let result: { output?: unknown; error?: string; logs: LogLine[] };
       try {
-        const output = await implementation({
+        result = await runNodeOnServer({
+          type: node.type,
           input,
-          config: node.config,
-          secrets: {},
-          vars: {},
-          safeMode: false,
-          runInput: {},
-          log,
-          runSubflow: (workflowId, subInput) =>
-            makeSubflowRunner([s.flow.id])(workflowId, subInput, node.id),
+          config: node.config ?? {},
+          ...(s.selectedEnvironment ? { environment: s.selectedEnvironment } : {}),
+          safeMode: s.safeMode,
+          ...(selectedEnvProtected() && !s.safeMode ? { confirm: s.selectedEnvironment } : {}),
         });
-        sample('succeeded', output);
-        return { output, logs };
       } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        sample('failed');
-        return { error, logs };
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          error: get().runnerOnline === false
+            ? 'Runner offline — start it with `npx emberflow dev`, then run this node again.'
+            : message,
+          logs: [],
+        };
       }
+      // Record a local trace sample so the modal's "previous executions" list
+      // and pin affordance keep working alongside runner-recorded samples.
+      s.trace.record({
+        id: crypto.randomUUID(),
+        workflowId: s.flow.id,
+        runId: `isolated-${crypto.randomUUID().slice(0, 8)}`,
+        nodeId: node.id,
+        nodeType: node.type,
+        nodeLabel: node.label,
+        input,
+        output: result.output,
+        status: result.error ? 'failed' : 'succeeded',
+        startedAt,
+        completedAt: new Date().toISOString(),
+      });
+      return { output: result.output, error: result.error, logs: result.logs ?? [] };
     },
 
     async testWorkflow(flowId, environment) {
@@ -1639,12 +1479,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       get().resetRun();
       set({ stepMode: false });
       set({ activeScenarioId: scenarioId });
-      if (get().effectiveMode() === 'server') {
-        await ensureServerRun('run', scenario.input, scenario.name);
-        return;
-      }
-      const handle = ensureRun(scenario.input, scenario.mocks);
-      if (handle) await handle.runToEnd();
+      await ensureServerRun('run', scenario.input, scenario.name);
     },
 
     async stepScenario(scenarioId) {
@@ -1654,22 +1489,14 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       get().resetRun();
       set({ stepMode: true });
       set({ activeScenarioId: scenarioId });
-      if (get().effectiveMode() === 'server') {
-        const runId = await ensureServerRun('step', scenario.input, scenario.name);
-        if (runId) {
-          try {
-            const done = await stepServerRun(runId);
-            if (done) set({ activeServerRunId: null });
-          } catch (err) {
-            reportRunError(err instanceof Error ? err.message : String(err));
-          }
+      const runId = await ensureServerRun('step', scenario.input, scenario.name);
+      if (runId) {
+        try {
+          const done = await stepServerRun(runId);
+          if (done) set({ activeServerRunId: null });
+        } catch (err) {
+          reportRunError(err instanceof Error ? err.message : String(err));
         }
-        return;
-      }
-      const handle = ensureRun(scenario.input, scenario.mocks);
-      if (handle) {
-        await handle.step();
-        selectLatestCompleted();
       }
     },
 
@@ -1717,50 +1544,37 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     async stepRun() {
       // A plain step/run is not scenario-driven; only tag history for runs
       // started via runScenario.
-      if (!get().activeRun && !get().activeServerRunId) set({ activeScenarioId: null });
+      if (!get().activeServerRunId) set({ activeScenarioId: null });
       stepFollow = true;
       set({ stepMode: true, runConsoleDismissedId: null });
-      if (get().effectiveMode() === 'server') {
-        const runId = await ensureServerRun('step');
-        if (runId) {
-          try {
-            const done = await stepServerRun(runId);
-            if (done) set({ activeServerRunId: null });
-          } catch (err) {
-            reportRunError(err instanceof Error ? err.message : String(err));
-          }
+      const runId = await ensureServerRun('step');
+      if (runId) {
+        try {
+          const done = await stepServerRun(runId);
+          if (done) set({ activeServerRunId: null });
+        } catch (err) {
+          reportRunError(err instanceof Error ? err.message : String(err));
         }
-        return;
-      }
-      const handle = ensureRun();
-      if (handle) {
-        await handle.step();
-        selectLatestCompleted();
       }
     },
 
     async runToEnd() {
       stepFollow = false;
       set({ stepMode: false, runConsoleDismissedId: null });
-      if (!get().activeRun && !get().activeServerRunId) set({ activeScenarioId: null });
-      if (get().effectiveMode() === 'server') {
-        const existing = get().activeServerRunId;
-        if (existing) {
-          // A stepped run is already live on the runner — walk it to the end.
-          try {
-            let done = false;
-            while (!done) done = await stepServerRun(existing);
-            set({ activeServerRunId: null });
-          } catch (err) {
-            reportRunError(err instanceof Error ? err.message : String(err));
-          }
-          return;
+      if (!get().activeServerRunId) set({ activeScenarioId: null });
+      const existing = get().activeServerRunId;
+      if (existing) {
+        // A stepped run is already live on the runner — walk it to the end.
+        try {
+          let done = false;
+          while (!done) done = await stepServerRun(existing);
+          set({ activeServerRunId: null });
+        } catch (err) {
+          reportRunError(err instanceof Error ? err.message : String(err));
         }
-        await ensureServerRun('run');
         return;
       }
-      const handle = ensureRun();
-      if (handle) await handle.runToEnd();
+      await ensureServerRun('run');
     },
 
     resetRun() {

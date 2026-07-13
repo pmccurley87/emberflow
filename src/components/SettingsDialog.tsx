@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { GlobeIcon, RotateCcwIcon, ServerIcon, SettingsIcon } from 'lucide-react';
+import { ArrowLeftIcon, RotateCcwIcon, SettingsIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -17,16 +17,6 @@ const AGENT_LABELS: Record<AgentKind, string> = {
   claude: 'Claude',
 };
 
-const ENGINE_OPTIONS: Array<{
-  value: 'auto' | 'server' | 'browser';
-  label: string;
-  hint: string;
-}> = [
-  { value: 'auto', label: 'Auto', hint: 'runner when available (recommended)' },
-  { value: 'server', label: 'Server', hint: 'always the local runner' },
-  { value: 'browser', label: 'Browser', hint: 'in-tab engine, no secrets/CORS-free APIs' },
-];
-
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
     <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
@@ -36,20 +26,19 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * Settings dialog behind the toolbar gear. Absorbs the old EngineChip (execution
- * engine + runner status) and the Reset button, keeping the toolbar itself to
- * authoring + running.
+ * Settings dialog behind the toolbar gear. Holds the coding-agent picker and
+ * the Reset button; runner status lives in the StatusBar. Execution is always
+ * server-side, so there is no engine choice here.
  */
 export function SettingsDialog() {
-  const mode = useBuilderStore((s) => s.executionMode);
-  const setMode = useBuilderStore((s) => s.setExecutionMode);
-  const runnerOnline = useBuilderStore((s) => s.runnerOnline);
   const resetRun = useBuilderStore((s) => s.resetRun);
   const agentChoice = useBuilderStore((s) => s.agentChoice);
   const setAgentChoice = useBuilderStore((s) => s.setAgentChoice);
   // Open state lives in the store so the Welcome checklist can deep-link here.
   const open = useBuilderStore((s) => s.settingsOpen);
   const setOpen = useBuilderStore((s) => s.setSettingsOpen);
+  const fromWelcome = useBuilderStore((s) => s.settingsFromWelcome);
+  const setWelcomeOpen = useBuilderStore((s) => s.setWelcomeOpen);
   const [availableAgents, setAvailableAgents] = useState<DetectedAgent[]>([]);
 
   useEffect(() => {
@@ -62,9 +51,6 @@ export function SettingsDialog() {
       cancelled = true;
     };
   }, [open]);
-
-  const effective = mode === 'auto' ? (runnerOnline ? 'server' : 'browser') : mode;
-  const offline = effective === 'server' && runnerOnline === false;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -79,45 +65,22 @@ export function SettingsDialog() {
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-md">
-        <DialogTitle>Settings</DialogTitle>
-
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <SectionTitle>Execution engine</SectionTitle>
-            <span className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              {effective === 'server' ? (
-                <ServerIcon className="size-3" />
-              ) : (
-                <GlobeIcon className="size-3" />
-              )}
-              <span
-                className={cn(
-                  'size-1.5 rounded-full',
-                  offline
-                    ? 'bg-destructive'
-                    : effective === 'server'
-                      ? 'bg-success'
-                      : 'bg-muted-foreground',
-                )}
-              />
-              {effective === 'server' ? 'runner online' : offline ? 'runner offline' : 'browser'}
-            </span>
-          </div>
-          <div className="flex flex-col gap-1">
-            {ENGINE_OPTIONS.map((option) => (
-              <button
-                key={option.value}
-                onClick={() => setMode(option.value)}
-                className={cn(
-                  'flex cursor-pointer flex-col items-start rounded-md border px-2.5 py-1.5 text-left transition-colors hover:bg-accent',
-                  mode === option.value ? 'border-ring bg-secondary/60' : 'border-border',
-                )}
-              >
-                <span className="text-[12.5px] font-medium">{option.label}</span>
-                <span className="text-[11px] text-muted-foreground">{option.hint}</span>
-              </button>
-            ))}
-          </div>
+        <div className="flex items-center gap-2">
+          {fromWelcome && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                setOpen(false);
+                setWelcomeOpen(true);
+              }}
+              aria-label="Back to setup checklist"
+              className="-ml-1.5 size-6 text-muted-foreground hover:text-foreground"
+            >
+              <ArrowLeftIcon className="size-4" />
+            </Button>
+          )}
+          <DialogTitle>Settings</DialogTitle>
         </div>
 
         <div className="space-y-2">

@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Loader2Icon, ShieldIcon } from 'lucide-react';
+import { CheckIcon, ChevronUpIcon, ListChecksIcon, Loader2Icon, ServerIcon, ShieldIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useBuilderStore } from '../store/builderStore';
+import { setupProgress } from '../store/setupClient';
+import { fetchInfrastructure, type InfrastructureResponse } from '../store/infraClient';
+import { InfrastructureDialog } from './InfrastructureDialog';
 import type { EnvironmentSummary } from '../store/serverRunner';
 import type { WorkflowRun } from '../engine';
 
@@ -133,10 +137,40 @@ export function StatusBar() {
   const selectedNodeId = useBuilderStore((s) => s.selectedNodeId);
   const flow = useBuilderStore((s) => s.flow);
   const run = useBuilderStore((s) => s.run);
+  const setupStatus = useBuilderStore((s) => s.setupStatus);
+  const setWelcomeOpen = useBuilderStore((s) => s.setWelcomeOpen);
+  const agentRun = useBuilderStore((s) => s.agentRun);
+
+  // Infrastructure chip: fetch on mount and whenever an agent run finishes (a
+  // completed scout writes the manifest) — mirroring InfraTab's refetch. Shown
+  // only once scouted; the welcome checklist owns the not-scouted path.
+  const [infraData, setInfraData] = useState<InfrastructureResponse | null>(null);
+  const [infraOpen, setInfraOpen] = useState(false);
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const agentRunStatus = agentRun?.status;
+  useEffect(() => {
+    if (agentRunStatus === 'running') return;
+    let cancelled = false;
+    void fetchInfrastructure().then((d) => {
+      if (!cancelled) setInfraData(d);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentRunStatus]);
+  // Scouted (present:true) → show the chip, even for a greenfield 0-item
+  // manifest; only the not-scouted path is hidden (owned by the checklist).
+  const infraCount = infraData && infraData.present ? infraData.manifest.items.length : null;
+
+  // Setup entry point: a quiet progress chip while onboarding is unfinished.
+  // Complete setups drop the chip — the checklist auto-open and this chip are
+  // the only entry points, and a finished checklist has nothing left to do.
+  const progress = setupStatus ? setupProgress(setupStatus) : null;
+  const setupPending = progress !== null && progress.done < progress.total;
 
   const current = environments.find((e) => e.name === selectedEnvironment);
   const protectedEnv = current?.protected ?? false;
-  const envLabel = selectedEnvironment || 'browser';
+  const envLabel = selectedEnvironment || (runnerOnline === false ? 'offline' : 'default');
 
   const onEnvClick = () => {
     if (!safeMode) {
@@ -220,28 +254,78 @@ export function StatusBar() {
           </span>
         </>
       )}
-      <Divider />
-      <div
-        role="group"
-        aria-label="Runbook register"
-        title="Runbook register — Simple reads outcomes; Technical adds type names + trace badges"
-        className="flex h-full items-center gap-0.5 px-1"
-      >
-        {(['simple', 'technical'] as const).map((v) => (
+      {setupPending && progress && (
+        <>
+          <Divider />
           <button
-            key={v}
             type="button"
-            onClick={() => setRegister(v)}
-            aria-pressed={register === v}
-            className={cn(
-              'rounded-[4px] px-1.5 py-0.5 text-[11px] capitalize transition-colors',
-              register === v ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground',
-            )}
+            onClick={() => setWelcomeOpen(true)}
+            title="Setup — first-run checklist for this project"
+            className={cn(segment, interactive)}
           >
-            {v}
+            <ListChecksIcon className="size-3 shrink-0" />
+            <span className="truncate text-foreground/80">setup</span>
+            <span className="shrink-0 font-mono tabular-nums text-muted-foreground/70">
+              {progress.done}/{progress.total}
+            </span>
           </button>
-        ))}
-      </div>
+        </>
+      )}
+      {infraCount !== null && (
+        <>
+          <Divider />
+          <button
+            type="button"
+            onClick={() => setInfraOpen(true)}
+            title="Project infrastructure — what the scout found that agents reuse"
+            className={cn(segment, interactive)}
+          >
+            <ServerIcon className="size-3 shrink-0" />
+            <span className="truncate text-foreground/80">infra</span>
+            <span className="shrink-0 font-mono tabular-nums text-muted-foreground/70">{infraCount}</span>
+          </button>
+        </>
+      )}
+      <Divider />
+      <Popover open={registerOpen} onOpenChange={setRegisterOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            title="Runbook register — Simple reads outcomes; Technical adds type names + trace badges"
+            className={cn(segment, interactive)}
+          >
+            <span className="truncate capitalize text-foreground/80">{register}</span>
+            <ChevronUpIcon className="size-3 shrink-0 text-muted-foreground/70" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          side="top"
+          align="start"
+          className="w-40 p-1"
+          role="radiogroup"
+          aria-label="Runbook register"
+        >
+          {(['simple', 'technical'] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              role="radio"
+              aria-checked={register === v}
+              onClick={() => {
+                setRegister(v);
+                setRegisterOpen(false);
+              }}
+              className={cn(
+                'flex w-full items-center justify-between gap-2 rounded-[4px] px-2 py-1 text-left text-[11px] capitalize transition-colors',
+                register === v ? 'text-foreground' : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground',
+              )}
+            >
+              <span>{v}</span>
+              {register === v && <CheckIcon className="size-3 shrink-0 text-highlight" />}
+            </button>
+          ))}
+        </PopoverContent>
+      </Popover>
 
       <div className="ml-auto flex h-full min-w-0 items-center">
         {selectedNode && (
@@ -271,6 +355,7 @@ export function StatusBar() {
           </>
         )}
       </div>
+      <InfrastructureDialog open={infraOpen} onOpenChange={setInfraOpen} data={infraData} />
     </footer>
   );
 }

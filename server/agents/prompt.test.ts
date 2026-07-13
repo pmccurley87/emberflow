@@ -484,6 +484,15 @@ describe('buildPrompt', () => {
       expect(prompt).toMatch(/open questions/i);
     });
 
+    it('supports amending an existing manifest in place for targeted add/remove/correct instructions', () => {
+      const prompt = buildPrompt(scout, apisDir, relPath);
+      expect(prompt).toMatch(/AMENDMENT vs FULL RESCAN/);
+      expect(prompt).toMatch(/UPDATE that file in place/i);
+      expect(prompt).toMatch(/preserve every item you were not asked to change/i);
+      expect(prompt).toMatch(/bump "scannedAt"/);
+      expect(prompt).toMatch(/FULL RESCAN.*remains the default/i);
+    });
+
     it('does NOT get the doctor rule, the mocks guidance, or the traceKind nudge (it edits no operation)', () => {
       const prompt = buildPrompt(scout, apisDir, relPath);
       expect(prompt).not.toMatch(/run doctor/i);

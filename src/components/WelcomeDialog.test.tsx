@@ -37,10 +37,10 @@ describe('WelcomeChecklist', () => {
   it('renders every checklist row', () => {
     const out = html(FRESH);
     for (const title of [
-      'Coding agent detected',
-      'Environments configured',
+      'Coding agent',
+      'Environments',
       'Secrets &amp; auth',
-      'Agent skills installed',
+      'Agent skills',
       'Infrastructure scouted',
       'First operation',
     ]) {
@@ -78,5 +78,35 @@ describe('WelcomeChecklist', () => {
   it('configured project: scout is enabled (agent present)', () => {
     const out = html(CONFIGURED);
     expect(out).not.toContain('Detect a coding agent first');
+  });
+
+  it('two agents + onChooseAgent: renders the picker with the chosen agent pressed', () => {
+    const out = renderToStaticMarkup(
+      <WelcomeChecklist status={CONFIGURED} chosenAgent="codex" onChooseAgent={() => {}} />,
+    );
+    expect(out).toContain('Choose coding agent');
+    // Codex is the active choice; Claude is not.
+    expect(out).toMatch(/aria-pressed="true"[^>]*>Codex/);
+    expect(out).toMatch(/aria-pressed="false"[^>]*>Claude/);
+  });
+
+  it('single agent: no picker even when onChooseAgent is provided', () => {
+    const oneAgent: SetupStatus = { ...CONFIGURED, agents: [{ kind: 'claude', version: '2.1.0' }] };
+    const out = renderToStaticMarkup(
+      <WelcomeChecklist status={oneAgent} onChooseAgent={() => {}} />,
+    );
+    expect(out).not.toContain('Choose coding agent');
+    expect(out).toContain('claude 2.1.0');
+  });
+
+  it('progress + next-step emphasis: fresh shows 0/6 with the first row emphasized; fully-done has no next step', () => {
+    const fresh = html(FRESH);
+    expect(fresh).toContain('0 of 6 steps done');
+    expect(fresh).toContain('bg-highlight/[0.06]'); // exactly one emphasized row
+    expect(fresh.split('bg-highlight/[0.06]').length - 1).toBe(1);
+
+    const done = html(CONFIGURED);
+    expect(done).toContain('6 of 6 steps done');
+    expect(done).not.toContain('bg-highlight/[0.06]'); // nothing left to emphasize
   });
 });

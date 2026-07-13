@@ -26,6 +26,25 @@ const KIND_COLOR: Record<InfrastructureKind, string> = {
   other: 'text-muted-foreground',
 };
 
+/**
+ * Plain-words gloss per kind, ≤1 line each. Surfaced (muted) under the card when
+ * `explainKinds` is set — the modal wants to teach what each kind MEANS to the
+ * agent; the Dock tab (dense, familiar) leaves it off. One source of truth so
+ * both renders share the same vocabulary.
+ */
+export const KIND_EXPLANATION: Record<InfrastructureKind, string> = {
+  database: 'A data store the project reads and writes — operations can query it through registered nodes.',
+  'http-api': 'An external service reached over HTTP — operations call it with the named secret.',
+  queue: 'A job queue the project enqueues into or consumes.',
+  cache: 'A fast key/value store for transient or hot data.',
+  email: 'A transactional email provider.',
+  llm: 'A language-model API the project calls.',
+  auth: 'An identity/auth provider or token flow.',
+  framework: "The app's own serving framework — context, not a callable dependency.",
+  storage: 'Object or file storage the project reads and writes.',
+  other: "Infrastructure that doesn't fit the other kinds.",
+};
+
 function KindChip({ kind }: { kind: InfrastructureKind }) {
   return (
     <Badge variant="mono" className="uppercase tracking-wider">
@@ -35,13 +54,19 @@ function KindChip({ kind }: { kind: InfrastructureKind }) {
   );
 }
 
-function InfraCard({ item }: { item: InfrastructureItem }) {
+function InfraCard({ item, explainKinds = false }: { item: InfrastructureItem; explainKinds?: boolean }) {
   return (
     <div className="flex flex-col gap-2 rounded-md border border-border/70 bg-card px-3 py-2.5">
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-[12.5px] font-medium leading-tight">{item.name}</span>
         <KindChip kind={item.kind} />
       </div>
+
+      {explainKinds && (
+        <p className="text-[10.5px] leading-snug text-muted-foreground/80">
+          {KIND_EXPLANATION[item.kind] ?? KIND_EXPLANATION.other}
+        </p>
+      )}
 
       {item.evidence.length > 0 && (
         <ul className="flex flex-col gap-0.5">
@@ -118,12 +143,15 @@ export function InfraPanel({
   scouting = false,
   canScout = true,
   canScoutReason,
+  explainKinds = false,
 }: {
   data: InfrastructureResponse | null;
   onScout?: () => void;
   scouting?: boolean;
   canScout?: boolean;
   canScoutReason?: string;
+  /** Render the plain-words per-kind gloss under each card (used by the modal). */
+  explainKinds?: boolean;
 }) {
   if (!data || data.present === false) {
     return (
@@ -163,7 +191,7 @@ export function InfraPanel({
       )}
       <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2.5">
         {manifest.items.map((item) => (
-          <InfraCard key={item.id} item={item} />
+          <InfraCard key={item.id} item={item} explainKinds={explainKinds} />
         ))}
       </div>
     </div>

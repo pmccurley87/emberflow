@@ -136,9 +136,13 @@ consumer's `Greet` node and returned `{ hello: "Hello, Ada!" }`.
 
 ## Known limitations / future work
 
-- **Browser execution mode is built-in-only.** The in-tab engine can run
-  built-in nodes; consumer nodes run on the server (which is correct — they
-  reach your app). This is by design.
+- **Execution is server-side by design; the studio is a pure client.** All
+  runs — whole operations and single "Run node" executions (POST `/node-run`) —
+  happen on the runner, against your project's environments/secrets. The studio
+  bundles no node implementations (not even built-ins): it renders the runbook,
+  diagnostics and node metadata synced over `/api/nodes`, and drives the runner
+  over HTTP/SSE. With the runner offline it shows a calm "Runner offline" state
+  rather than executing anything in the tab.
 - **A JS project runs on plain Node against the compiled `dist/`; a TS
   project runs under `tsx`.** `tsx` is now an optional peer dep rather than a
   hard runtime dependency — see the runtime-support matrix above. The package

@@ -1,6 +1,6 @@
-import type { WorkflowDefinition, WorkflowEdge } from '../engine';
-import { computeLoopRegions, topoSort, type LoopRegion } from '../engine';
-import type { NodeRegistry } from '../engine';
+import type { WorkflowDefinition, WorkflowEdge } from '../engine/types';
+import { computeLoopRegions, topoSort, type LoopRegion } from '../engine/validation';
+import type { NodeRegistry } from '../engine/registry';
 import { firstSentence, simpleNodeDescription } from './registerLens';
 
 export interface RunbookStep {

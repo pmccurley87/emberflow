@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { PanelBottomOpenIcon, PanelLeftOpenIcon, PanelRightOpenIcon, XIcon } from 'lucide-react';
+import { FlameIcon, PanelBottomOpenIcon, PanelLeftOpenIcon, PanelRightOpenIcon, XIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { AgentConsole } from './components/AgentConsole';
@@ -68,9 +68,53 @@ function EdgeReopen({
   );
 }
 
+/**
+ * Calm, honest offline state. The workspace (operations, environments, runs) all
+ * come from the runner — with it down and no workspace ever adopted, there is
+ * nothing to show and nothing to execute, so we say so plainly instead of
+ * pretending an empty canvas is a project.
+ */
+function RunnerOfflinePanel() {
+  const checkRunner = useBuilderStore((s) => s.checkRunner);
+  return (
+    <div className="flex h-full min-h-0 items-center justify-center p-8">
+      <div className="flex max-w-md flex-col items-center gap-3 text-center">
+        <FlameIcon className="size-8 text-muted-foreground/50" />
+        <h2 className="text-[15px] font-semibold tracking-tight">Runner offline</h2>
+        <p className="text-[13px] leading-relaxed text-muted-foreground">
+          The studio is a pure client — your operations, environments and runs all
+          live on the runner. Start it, then this workspace fills in.
+        </p>
+        <code className="rounded-md border border-border bg-tertiary px-2.5 py-1.5 font-mono text-[12.5px] text-foreground">
+          npx emberflow dev
+        </code>
+        <button
+          type="button"
+          onClick={() => void checkRunner()}
+          className="mt-1 rounded-md px-2.5 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
+        >
+          Re-check
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** The center panel's content: the runbook document is the sole flow surface. */
 function CenterView() {
   const viewRegister = useBuilderStore((s) => s.viewRegister);
+  const runnerOnline = useBuilderStore((s) => s.runnerOnline);
+  const workspaceSource = useBuilderStore((s) => s.workspaceSource);
+  // Offline AND no runner workspace ever adopted → the calm offline panel. Once
+  // a workspace has been adopted (workspaceSource === 'server'), a mid-session
+  // runner blip keeps showing the flow; the StatusBar carries the offline signal.
+  if (runnerOnline === false && workspaceSource !== 'server') {
+    return (
+      <div className="relative h-full min-h-0">
+        <RunnerOfflinePanel />
+      </div>
+    );
+  }
   return (
     <div className="relative h-full min-h-0">
       <RunbookView register={viewRegister} />

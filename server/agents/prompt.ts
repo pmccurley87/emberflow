@@ -421,6 +421,10 @@ export function buildPrompt(
         lines.push('');
       }
       lines.push(
+        `AMENDMENT vs FULL RESCAN: if the instruction above asks for an amendment to the existing manifest — add, remove, or correct SPECIFIC items — and emberflow/infrastructure.json already exists, UPDATE that file in place: preserve every item you were not asked to change, apply only the requested change, and bump "scannedAt" to the current timestamp. Do NOT regenerate the whole manifest from scratch for a targeted amendment. A FULL RESCAN (rebuild the manifest from the whole project) remains the default when the instruction is empty or asks to re-scan/refresh generally.`,
+      );
+      lines.push('');
+      lines.push(
         `Investigate broadly — enumerate what the project already depends on and talks to:`,
       );
       lines.push(

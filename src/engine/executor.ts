@@ -60,11 +60,12 @@ function envRefName(value: unknown): string | undefined {
 function resolveEnvRef(name: string, vars: Record<string, string>): string {
   if (!(name in vars)) {
     // The most common cause is not a missing key but a run with NO environment
-    // at all: the in-tab engine has no vars, so flows seeded with $env refs
-    // need the server runner. Say so, instead of a bare "missing".
+    // at all: an environment-less run (e.g. a scenario test) has no vars, so
+    // flows seeded with $env refs need a real environment. Say so, instead of a
+    // bare "missing".
     const hint =
       Object.keys(vars).length === 0
-        ? ' — this run has no environment variables (in-tab/browser runs never do; make sure the runner is online and the engine is set to Server or Auto)'
+        ? ' — this run has no environment variables; run it against an environment that defines them'
         : '';
     throw new Error(`Missing environment variable: ${name}${hint}`);
   }

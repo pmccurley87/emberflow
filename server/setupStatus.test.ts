@@ -54,6 +54,11 @@ beforeAll(async () => {
       ...process.env,
       EMBERFLOW_RUNNER_PORT: String(PORT),
       EMBERFLOW_PROJECT: projectDir,
+      // The skills check also looks in the user's home dir (`init --global`);
+      // point homedir() at the temp project so a dev machine with real global
+      // skills doesn't flip the fresh-project assertion.
+      HOME: projectDir,
+      USERPROFILE: projectDir,
     },
     stdio: 'ignore',
   });

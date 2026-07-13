@@ -349,7 +349,7 @@ export function InfraTab() {
   return (
     <InfraPanel
       data={data}
-      onScout={beginInfrastructureScout}
+      onScout={() => beginInfrastructureScout()}
       scouting={agentRunStatus === 'running'}
       canScout={hasAgent}
       canScoutReason={NO_AGENT_REASON}

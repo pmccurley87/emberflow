@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { KeyRoundIcon, Settings2Icon, SparklesIcon } from 'lucide-react';
+import { ArrowLeftIcon, KeyRoundIcon, Settings2Icon, SparklesIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -21,9 +21,13 @@ import { useBuilderStore } from '../store/builderStore';
 export function EnvironmentsDialog({
   open,
   onOpenChange,
+  onBack,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** When set (opened from the Welcome checklist), a back arrow beside the
+   *  title returns there instead of just closing. */
+  onBack?: () => void;
 }) {
   const environments = useBuilderStore((s) => s.environments);
   const environmentsDefault = useBuilderStore((s) => s.environmentsDefault);
@@ -40,7 +44,20 @@ export function EnvironmentsDialog({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-lg">
-          <DialogTitle>Environments</DialogTitle>
+          <div className="flex items-center gap-2">
+            {onBack && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onBack}
+                aria-label="Back to setup checklist"
+                className="-ml-1.5 size-6 text-muted-foreground hover:text-foreground"
+              >
+                <ArrowLeftIcon className="size-4" />
+              </Button>
+            )}
+            <DialogTitle>Environments</DialogTitle>
+          </div>
           {environments.length === 0 ? (
             <>
               <DialogDescription>

@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pinsOf, useBuilderStore } from './builderStore';
 import { createLoginFlow } from '../flows/login-flow';
-import { createDefaultRegistry } from '../nodes';
 import * as serverRunner from './serverRunner';
 import * as agentClient from './agentClient';
-import type { WorkflowDefinition, WorkflowNode } from '../engine';
+import type { WorkflowDefinition } from '../engine';
 import type { ScenarioTestReport, ServerRunHandlers } from './serverRunner';
 
 vi.mock('./serverRunner', async () => {
@@ -22,8 +21,10 @@ vi.mock('./serverRunner', async () => {
     runnerHealthy: vi.fn(),
     testWorkflow: vi.fn(),
     startServerRun: vi.fn(),
+    stepServerRun: vi.fn(),
     subscribeServerRun: vi.fn(),
     setServingMode: vi.fn(),
+    runNodeOnServer: vi.fn(),
   };
 });
 
@@ -173,18 +174,23 @@ describe('builderStore workflows', () => {
 
 describe('builderStore pinning', () => {
   beforeEach(() => {
-    useBuilderStore.setState({ flow: createLoginFlow(), run: null, logs: [], activeRun: null });
+    vi.mocked(serverRunner.startServerRun).mockReset().mockResolvedValue('run-p');
+    vi.mocked(serverRunner.subscribeServerRun).mockReset().mockImplementation(() => () => {});
+    useBuilderStore.setState({
+      flow: createLoginFlow(), run: null, logs: [], activeRun: null,
+      activeServerRunId: null, runnerOnline: true,
+    });
   });
 
-  it('pinned output skips execution and feeds downstream mapping', async () => {
+  it('threads pinned outputs to the server run (the runner honours the pin)', async () => {
     useBuilderStore
       .getState()
       .pinNodeOutput('validate', { userId: 'user-pinned', username: 'pinned' });
     await useBuilderStore.getState().runToEnd();
-    const run = useBuilderStore.getState().run!;
-    expect(run.nodeStates.validate.pinned).toBe(true);
-    expect((run.nodeStates.fetch.input as { userId: string }).userId).toBe('user-pinned');
-  }, 10_000);
+    // pins are startServerRun's 3rd arg (flow, mode, pins, input, options).
+    const pins = vi.mocked(serverRunner.startServerRun).mock.calls[0][2];
+    expect(pins).toEqual({ validate: { userId: 'user-pinned', username: 'pinned' } });
+  });
 
   it('unpinNode clears the pin and empties metadata', () => {
     useBuilderStore.getState().pinNodeOutput('validate', { userId: 'x' });
@@ -205,36 +211,65 @@ describe('builderStore pinning', () => {
   });
 });
 
-describe('builderStore isolated node run', () => {
+describe('builderStore isolated node run (server-backed)', () => {
   beforeEach(() => {
-    useBuilderStore.setState({ flow: createLoginFlow(), run: null, logs: [], activeRun: null });
+    vi.mocked(serverRunner.runNodeOnServer).mockReset();
+    useBuilderStore.setState({
+      flow: createLoginFlow(),
+      run: null,
+      logs: [],
+      activeRun: null,
+      runnerOnline: true,
+      selectedEnvironment: 'local',
+      safeMode: true,
+    });
   });
 
-  it('executes one node against supplied input, capturing logs and a sample', async () => {
+  it('calls the runner with the node type, input, config and env, and records a local sample', async () => {
+    vi.mocked(serverRunner.runNodeOnServer).mockResolvedValue({
+      output: { plan: 'pro' },
+      logs: [{ timestamp: 't', level: 'info', runId: 'node-run', message: 'plan pro' }],
+    });
     const before = useBuilderStore.getState().trace.samplesFor('checkPlan').length;
+
     const result = await useBuilderStore
       .getState()
       .runNodeIsolated('checkPlan', { user: { plan: 'pro' } });
+
     expect(result.error).toBeUndefined();
     expect((result.output as { plan: string }).plan).toBe('pro');
     expect(result.logs.some((l) => l.message.includes('pro'))).toBe(true);
+    const call = vi.mocked(serverRunner.runNodeOnServer).mock.calls[0][0];
+    // Sends the node TYPE (CheckPlan), not the node id (checkPlan).
+    expect(call.type).toBe('CheckPlan');
+    expect(call.input).toEqual({ user: { plan: 'pro' } });
+    expect(call.environment).toBe('local');
     const samples = useBuilderStore.getState().trace.samplesFor('checkPlan');
     expect(samples.length).toBe(before + 1);
     expect(samples[0].input).toEqual({ user: { plan: 'pro' } });
     expect(useBuilderStore.getState().run).toBeNull();
   });
 
-  it('reports node failure as error with a failed sample', async () => {
-    const result = await useBuilderStore
-      .getState()
-      .runNodeIsolated('validate', { username: 'ada', password: 'lovelace' });
-    expect(result.error).toBeUndefined();
-
+  it('surfaces a runner error as the result error and records a failed sample', async () => {
+    vi.mocked(serverRunner.runNodeOnServer).mockResolvedValue({
+      error: 'Password too short',
+      logs: [],
+    });
     const failed = await useBuilderStore
       .getState()
       .runNodeIsolated('validate', { username: 'ada', password: 'x' });
     expect(failed.error).toContain('Password too short');
     expect(useBuilderStore.getState().trace.samplesFor('validate')[0].status).toBe('failed');
+  });
+
+  it('shows the offline notice when the runner is unreachable', async () => {
+    useBuilderStore.setState({ runnerOnline: false });
+    vi.mocked(serverRunner.runNodeOnServer).mockRejectedValue(new Error('Failed to fetch'));
+    const result = await useBuilderStore
+      .getState()
+      .runNodeIsolated('validate', { username: 'ada', password: 'x' });
+    expect(result.error).toContain('Runner offline');
+    expect(result.logs).toEqual([]);
   });
 });
 
@@ -428,6 +463,8 @@ describe('builderStore run history', () => {
 
 describe('builderStore scenarios', () => {
   beforeEach(() => {
+    vi.mocked(serverRunner.startServerRun).mockReset().mockResolvedValue('run-s');
+    vi.mocked(serverRunner.subscribeServerRun).mockReset().mockImplementation(() => () => {});
     // Start from a scenario-free flow: the seeded examples would offset counts.
     const flow = createLoginFlow();
     delete flow.scenarios;
@@ -436,9 +473,10 @@ describe('builderStore scenarios', () => {
       run: null,
       logs: [],
       activeRun: null,
+      activeServerRunId: null,
       runHistory: [],
       activeScenarioId: null,
-      executionMode: 'browser',
+      runnerOnline: true,
     });
   });
 
@@ -458,7 +496,12 @@ describe('builderStore scenarios', () => {
     expect(useBuilderStore.getState().flow.scenarios).toBeUndefined();
   });
 
-  it('runScenario feeds the payload through the Input node and tags history', async () => {
+  it('runScenario starts a server run with the scenario payload + name and tags history', async () => {
+    let capturedHandlers: ServerRunHandlers | undefined;
+    vi.mocked(serverRunner.subscribeServerRun).mockImplementation((_runId, handlers) => {
+      capturedHandlers = handlers;
+      return () => {};
+    });
     useBuilderStore
       .getState()
       .addScenario('new user', { username: 'newton', password: 'apple123' });
@@ -466,25 +509,50 @@ describe('builderStore scenarios', () => {
 
     await useBuilderStore.getState().runScenario(id);
 
-    const run = useBuilderStore.getState().run!;
-    expect(run.status).toBe('succeeded');
-    expect((run.nodeStates.input.output as { username: string }).username).toBe('newton');
-    // 'newton' is a new user: the welcome branch fires and checkPlan is skipped.
-    expect(run.nodeStates.welcome.status).toBe('succeeded');
-    expect(run.nodeStates.checkPlan.status).toBe('skipped');
+    const call = vi.mocked(serverRunner.startServerRun).mock.calls[0];
+    expect(call[1]).toBe('run');
+    expect(call[3]).toEqual({ username: 'newton', password: 'apple123' });
+    expect(call[4]).toMatchObject({ scenarioName: 'new user' });
+
+    const flowId = useBuilderStore.getState().flow.id;
+    capturedHandlers!.onFinished({
+      id: 'run-s',
+      workflowId: flowId,
+      status: 'succeeded',
+      startedAt: '2026-07-10T10:00:00Z',
+      completedAt: '2026-07-10T10:00:01Z',
+      nodeStates: {},
+    });
     expect(useBuilderStore.getState().runHistory[0].scenarioName).toBe('new user');
-  }, 15_000);
+  });
 
   it('a plain run after a scenario run is not tagged', async () => {
+    const handlersByRun: Record<string, ServerRunHandlers> = {};
+    vi.mocked(serverRunner.subscribeServerRun).mockImplementation((runId, handlers) => {
+      handlersByRun[runId] = handlers;
+      return () => {};
+    });
     useBuilderStore
       .getState()
       .addScenario('new user', { username: 'newton', password: 'apple123' });
     const id = useBuilderStore.getState().flow.scenarios![0].id;
-    await useBuilderStore.getState().runScenario(id);
+    const flowId = useBuilderStore.getState().flow.id;
 
+    vi.mocked(serverRunner.startServerRun).mockResolvedValueOnce('run-a');
+    await useBuilderStore.getState().runScenario(id);
+    handlersByRun['run-a'].onFinished({
+      id: 'run-a', workflowId: flowId, status: 'succeeded',
+      startedAt: '2026-07-10T10:00:00Z', completedAt: '2026-07-10T10:00:01Z', nodeStates: {},
+    });
+
+    vi.mocked(serverRunner.startServerRun).mockResolvedValueOnce('run-b');
     await useBuilderStore.getState().runToEnd();
+    handlersByRun['run-b'].onFinished({
+      id: 'run-b', workflowId: flowId, status: 'succeeded',
+      startedAt: '2026-07-10T10:00:02Z', completedAt: '2026-07-10T10:00:03Z', nodeStates: {},
+    });
     expect(useBuilderStore.getState().runHistory[0].scenarioName).toBeUndefined();
-  }, 20_000);
+  });
 });
 
 describe('builderStore environments + safe mode', () => {
@@ -664,6 +732,29 @@ describe('builderStore agent picker', () => {
       .getState()
       .runAgent({ action: 'edit-flow', flowId: 'f1', instruction: 'go' }, { model: 'other' });
     expect(agentClient.startAgent).toHaveBeenCalledWith(expect.anything(), { model: 'other' });
+  });
+
+  it('beginInfrastructureScout: a leaked MouseEvent (onClick wiring) falls back to the full-rescan instruction', () => {
+    // Regression: the Dock's scout button once passed the click event as
+    // `instruction`, crashing on instruction.trim(). Non-strings = full rescan.
+    useBuilderStore.getState().beginInfrastructureScout(
+      { type: 'click' } as unknown as string,
+    );
+    expect(agentClient.startAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'scout-infrastructure',
+        instruction: expect.stringContaining('Scan this project'),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('beginInfrastructureScout: a real instruction threads verbatim', () => {
+    useBuilderStore.getState().beginInfrastructureScout('add our Redis cache');
+    expect(agentClient.startAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ instruction: 'add our Redis cache' }),
+      expect.anything(),
+    );
   });
 });
 
@@ -924,75 +1015,8 @@ describe('builderStore run console dismissal', () => {
 // the toolbar's visual reflection of it, is only verifiable in a rendered
 // browser/component-test environment, not from the store alone.
 
-describe('builderStore subflow execution', () => {
-  const node = (id: string, type: string, extra: Partial<WorkflowNode> = {}): WorkflowNode => ({
-    id, type, label: id, position: { x: 0, y: 0 }, config: {}, ...extra,
-  });
-  const mkFlow = (
-    id: string, name: string, nodes: WorkflowNode[], edges: WorkflowDefinition['edges'],
-  ): WorkflowDefinition => ({
-    id, name, version: 1, nodes, edges,
-    createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
-  });
-
-  beforeEach(() => {
-    // Delay-free registry so end-to-end runs are fast; browser mode so runs
-    // execute in-tab through the store's subflow runner.
-    useBuilderStore.setState({
-      registry: createDefaultRegistry(0),
-      runnerOnline: false,
-      executionMode: 'browser',
-      run: null,
-      logs: [],
-      activeRun: null,
-      activeServerRunId: null,
-    });
-  });
-
-  it('resolves a shelf workflow and forwards its logs with prefixing', async () => {
-    const child = mkFlow('child', 'Child', [node('cres', 'Result', { label: 'Result' })], []);
-    const parent = mkFlow(
-      'parent', 'Parent',
-      [
-        node('sub', 'Subflow', { config: { workflowId: 'child' } }),
-        node('res', 'Result', { inputMap: { data: { sourceNodeId: 'sub', sourceField: '$' } } }),
-      ],
-      [{ id: 'e', source: 'sub', target: 'res', targetHandle: 'data' }],
-    );
-    useBuilderStore.setState({ flow: parent, shelf: [child] });
-
-    await useBuilderStore.getState().runToEnd();
-    const s = useBuilderStore.getState();
-    expect(s.run?.status).toBe('succeeded');
-    expect(s.run?.nodeStates.sub.status).toBe('succeeded');
-    // The child's Result-collected output flows into the parent's Result.
-    expect(s.run?.nodeStates.res.output).toEqual({ data: {} });
-
-    const forwarded = s.logs.find((l) => l.nodeId === 'sub/cres');
-    expect(forwarded, JSON.stringify(s.logs)).toBeDefined();
-    expect(forwarded?.nodeLabel).toBe('Child › Result');
-  });
-
-  it('rejects an unknown workflow id', async () => {
-    const parent = mkFlow('parent', 'Parent', [node('sub', 'Subflow', { config: { workflowId: 'nope' } })], []);
-    useBuilderStore.setState({ flow: parent, shelf: [] });
-    await useBuilderStore.getState().runToEnd();
-    const s = useBuilderStore.getState();
-    expect(s.run?.status).toBe('failed');
-    expect(s.run?.nodeStates.sub.error).toBe('Unknown workflow: nope');
-  });
-
-  it('catches an A→B→A cycle at runtime', async () => {
-    const a = mkFlow('a', 'A', [node('subA', 'Subflow', { config: { workflowId: 'b' } })], []);
-    const b = mkFlow('b', 'B', [node('subB', 'Subflow', { config: { workflowId: 'a' } })], []);
-    useBuilderStore.setState({ flow: a, shelf: [b] });
-    await useBuilderStore.getState().runToEnd();
-    const s = useBuilderStore.getState();
-    expect(s.run?.status).toBe('failed');
-    // The cycle is reported from deep in the child; its error log is forwarded up.
-    expect(s.logs.some((l) => l.message === 'subflow cycle: a → b → a')).toBe(true);
-  });
-});
+// Subflow execution moved server-side (server/subflowRunner.ts, exercised by the
+// runner's run tests) — the studio no longer runs child workflows in-tab.
 
 describe('builderStore.syncNodeMeta', () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -1097,7 +1121,6 @@ describe('builderStore mock runs (studio wiring)', () => {
       logs: [],
       activeRun: null,
       activeServerRunId: null,
-      executionMode: 'server',
       runnerOnline: true,
       runnerMock: true,
       runHistory: [],
@@ -1174,7 +1197,6 @@ describe('builderStore server-run finished event → errorHandler tag', () => {
       logs: [],
       activeRun: null,
       activeServerRunId: null,
-      executionMode: 'server',
       runnerOnline: true,
       runHistory: [],
       activeScenarioId: null,

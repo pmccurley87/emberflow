@@ -336,6 +336,43 @@ export async function startServerRun(
   return runId;
 }
 
+/** Request to run a single node in isolation on the runner (POST /node-run). */
+export interface NodeRunRequest {
+  type: string;
+  input: Record<string, unknown>;
+  config?: Record<string, unknown>;
+  environment?: string;
+  safeMode?: boolean;
+  /** Required to equal `environment` when running unsafe against a protected env. */
+  confirm?: string;
+}
+
+/** The runner's isolated node-run result (output redacted, logs captured). */
+export interface NodeRunResult {
+  output?: unknown;
+  error?: string;
+  logs: LogLine[];
+}
+
+/**
+ * Run one node in isolation on the runner: the runner resolves the environment's
+ * secrets/vars, honours safe mode, executes the node's implementation in-process
+ * and redacts the output. Throws on transport failure (runner offline) and on a
+ * non-2xx response (unknown type → 404, bad request → 400).
+ */
+export async function runNodeOnServer(req: NodeRunRequest): Promise<NodeRunResult> {
+  const response = await fetch(`${BASE}/node-run`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `Node run failed (HTTP ${response.status})`);
+  }
+  return (await response.json()) as NodeRunResult;
+}
+
 export async function stepServerRun(runId: string): Promise<boolean> {
   const response = await fetch(`${BASE}/runs/${runId}/step`, { method: 'POST' });
   if (!response.ok) throw new Error(`Step failed (HTTP ${response.status})`);

@@ -28,6 +28,23 @@ export interface SetupStatus {
   infrastructure: { present: boolean; scannedAt?: string; itemCount?: number };
 }
 
+/**
+ * Progress across the Welcome checklist's rows, mirrored from
+ * deriveChecklist's per-row status logic. Powers the StatusBar setup chip;
+ * keep in step if rows are added or their completion rules change.
+ */
+export function setupProgress(status: SetupStatus): { done: number; total: number } {
+  const rows = [
+    status.agents.length > 0,
+    status.environments.configured,
+    status.environments.configured && status.environments.anyAuthConfigured,
+    status.skills.claude || status.skills.codex,
+    status.infrastructure.present,
+    status.ops.count > 1,
+  ];
+  return { done: rows.filter(Boolean).length, total: rows.length };
+}
+
 /** GET /setup-status — returns null when the runner is unreachable. */
 export async function fetchSetupStatus(): Promise<SetupStatus | null> {
   try {

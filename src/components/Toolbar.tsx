@@ -5,7 +5,6 @@ import {
   FlameIcon,
   PencilIcon,
   EllipsisIcon,
-  ListChecksIcon,
   PlayIcon,
   PlusIcon,
   SaveIcon,
@@ -56,10 +55,12 @@ function infraNodesOf(
 }
 
 /** Derives diagnoseOperation's `mutationSourcesByNode` extra from the studio's
- *  client-side node registry, mirroring infraNodesOf's per-node degradation:
- *  a node whose type isn't registered, isn't a mutation, or whose
- *  implementation isn't a function is simply absent from the map rather than
- *  aborting the whole computation. */
+ *  definitions-only node registry. The implementation source comes from
+ *  `registry.getSource(type)` — the runner-synced `source` string (see
+ *  syncNodeMeta / nodesPayload), not a bundled implementation — so the
+ *  simulated-commit chip works even though the studio bundles no node code.
+ *  Per-node degradation mirrors infraNodesOf: a node whose type isn't
+ *  registered, isn't a mutation, or has no known source is simply absent. */
 function mutationSourcesOf(
   flow: { nodes: Array<{ id: string; type: string }> },
   registry: NodeRegistry,
@@ -67,10 +68,10 @@ function mutationSourcesOf(
   const mutationSourcesByNode: NonNullable<DiagnoseOperationExtras['mutationSourcesByNode']> = {};
   for (const node of flow.nodes) {
     if (!registry.has(node.type)) continue;
-    const { definition, implementation } = registry.get(node.type);
-    if (definition.effects === 'mutation' && typeof implementation === 'function') {
-      mutationSourcesByNode[node.id] = String(implementation);
-    }
+    const { definition } = registry.get(node.type);
+    if (definition.effects !== 'mutation') continue;
+    const source = registry.getSource(node.type);
+    if (source !== undefined) mutationSourcesByNode[node.id] = source;
   }
   return mutationSourcesByNode;
 }
@@ -91,11 +92,14 @@ const statusDot: Record<string, string> = {
 function RunSplitButton({
   onRun,
   runDisabled,
+  disabledReason,
   live,
   stepping,
 }: {
   onRun: () => void;
   runDisabled: boolean;
+  /** Shown as the button title when runDisabled (e.g. the runner is offline). */
+  disabledReason?: string;
   live: boolean;
   stepping: boolean;
 }) {
@@ -125,13 +129,15 @@ function RunSplitButton({
   const safeMode = useBuilderStore((s) => s.safeMode);
   // Blocked wins (it says why the button is disabled); otherwise plain-terms
   // explainer of what a real run means.
-  const runTitle = paramsBlocked
+  const runTitle = runDisabled && disabledReason
+    ? disabledReason
+    : paramsBlocked
     ? paramBlockers.map((d) => d.message).join('\n')
     : stepping
       ? 'Runs the stepped run to the end.'
       : runnerMock
         ? 'Runs this operation against scenario mocks — real logic, canned infrastructure. Nothing real is touched.'
-        : `Runs this operation for real against "${selectedEnvironment || 'browser'}" — every node executes, and requests hit real services. Safe mode ${safeMode ? 'is on: writes are skipped' : 'is off: writes happen'}.`;
+        : `Runs this operation for real against "${selectedEnvironment || 'the default environment'}" — every node executes, and requests hit real services. Safe mode ${safeMode ? 'is on: writes are skipped' : 'is off: writes happen'}.`;
 
   const lastRunFor = (sc: ScenarioDefinition) =>
     runHistory.find((r) => r.workflowId === flow.id && r.scenarioName === sc.name);
@@ -514,21 +520,22 @@ export function Toolbar() {
   const saveFlow = useBuilderStore((s) => s.saveFlow);
   const exportFlow = useBuilderStore((s) => s.exportFlow);
   const importFlow = useBuilderStore((s) => s.importFlow);
-  const executionMode = useBuilderStore((s) => s.executionMode);
   const runnerOnline = useBuilderStore((s) => s.runnerOnline);
   const environments = useBuilderStore((s) => s.environments);
   const selectedEnvironment = useBuilderStore((s) => s.selectedEnvironment);
   const safeMode = useBuilderStore((s) => s.safeMode);
   const agentPanelOpen = useBuilderStore((s) => s.agentPanelOpen);
   const toggleAgentPanel = useBuilderStore((s) => s.toggleAgentPanel);
-  const setWelcomeOpen = useBuilderStore((s) => s.setWelcomeOpen);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const [moreOpen, setMoreOpen] = useState(false);
 
-  // Only a manual server override with the runner down blocks running;
-  // auto mode always has the browser fallback.
-  const runDisabled = busy || (executionMode === 'server' && runnerOnline === false);
+  // Runs are always server-side: with the runner offline there is nowhere to
+  // execute, so Run/Step are disabled until it's back.
+  const runDisabled = busy || runnerOnline === false;
+  const runOfflineTitle = runnerOnline === false
+    ? 'Runner offline — start it with `npx emberflow dev` to run.'
+    : undefined;
   const currentEnv = environments.find((e) => e.name === selectedEnvironment);
   const live = (currentEnv?.protected ?? false) && !safeMode;
 
@@ -584,6 +591,7 @@ export function Toolbar() {
         <RunSplitButton
           onRun={guard(runToEnd)}
           runDisabled={runDisabled}
+          disabledReason={runOfflineTitle}
           live={live}
           stepping={stepping}
         />
@@ -593,11 +601,13 @@ export function Toolbar() {
           onClick={guard(stepRun)}
           disabled={runDisabled}
           title={
-            stepping
+            runDisabled && runOfflineTitle
+              ? runOfflineTitle
+              : stepping
               ? 'Runs the next node, then pauses again.'
               : runnerMock
                 ? 'Runs one node at a time against scenario mocks — real logic, canned infrastructure, paused between nodes.'
-                : `Runs one node at a time against "${selectedEnvironment || 'browser'}" — same real execution, paused between nodes.`
+                : `Runs one node at a time against "${selectedEnvironment || 'the default environment'}" — same real execution, paused between nodes.`
           }
         >
           {stepping ? <PlayIcon /> : <StepForwardIcon />}
@@ -640,16 +650,8 @@ export function Toolbar() {
         />
         <div className="h-5 w-px bg-border" />
         <LayoutToggles />
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => setWelcomeOpen(true)}
-          aria-label="Setup checklist"
-          title="Setup — first-run checklist for this project"
-          className="text-muted-foreground hover:text-foreground"
-        >
-          <ListChecksIcon />
-        </Button>
+        {/* Setup checklist entry point lives in the StatusBar (bottom) — the
+            dialog itself stays mounted here for auto-open on fresh projects. */}
         <WelcomeDialog />
         <SettingsDialog />
         <Button
