@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { InfrastructureManifest } from '../infrastructure';
@@ -5,8 +6,17 @@ import type { InfrastructureManifest } from '../infrastructure';
 /** Absolute path to the register-API CLI bin (`node <this> <cmd>`), resolved
  *  from this file's location. This exact invocation is the ONLY sandbox-safe
  *  way to run the CLI: `npx emberflow` / `tsx` spawn a tsx IPC pipe the codex
- *  sandbox blocks; this bin runs the CLI in-process under tsx's register API. */
-const EMBERFLOW_BIN = resolve(dirname(fileURLToPath(import.meta.url)), '../../bin/emberflow.mjs');
+ *  sandbox blocks; this bin runs the CLI in-process under tsx's register API.
+ *
+ *  Two layouts: in the source repo this file is server/agents/prompt.ts and
+ *  bin/ is two levels up; in the shipped package it runs from
+ *  dist/server/agents/prompt.js while bin/ stays at the package ROOT — three
+ *  levels up. Probe both so consumer installs don't hand agents a dead path. */
+const EMBERFLOW_BIN = (() => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [resolve(here, '../../bin/emberflow.mjs'), resolve(here, '../../../bin/emberflow.mjs')];
+  return candidates.find((p) => existsSync(p)) ?? candidates[0];
+})();
 
 export type AgentIntent =
   | { action: 'new-scenario'; flowId: string; instruction: string }
@@ -16,6 +26,7 @@ export type AgentIntent =
   | { action: 'setup-auth'; environment: string; instruction: string }
   | { action: 'setup-environments'; instruction: string }
   | { action: 'scout-infrastructure'; instruction: string }
+  | { action: 'guided-setup'; instruction: string }
   | { action: 'cover-operation'; flowId: string; instruction: string }
   | { action: 'ask'; flowId?: string; instruction: string };
 
@@ -120,7 +131,7 @@ export function buildPrompt(
   // REUSES it instead of inventing parallel config. Omitted for the scout
   // intent — it's the one that WRITES the manifest, so priming it with the
   // manifest's own contents would be circular.
-  if (intent.action !== 'scout-infrastructure') {
+  if (intent.action !== 'scout-infrastructure' && intent.action !== 'guided-setup') {
     const INFRASTRUCTURE_ITEM_CAP = 30;
     if (infrastructure && infrastructure.items.length > 0) {
       lines.push('Known project infrastructure (from emberflow/infrastructure.json — what this project already uses):');
@@ -498,6 +509,59 @@ export function buildPrompt(
       );
       lines.push('');
       lines.push(doctorLine(intent.flowId));
+      break;
+    }
+    case 'guided-setup': {
+      const manifestPath = 'emberflow/infrastructure.json';
+      lines.push('Relevant skill: emberflow-basics (the project model + file layout).');
+      lines.push('');
+      lines.push(
+        'Task: guide this project through first-time Emberflow setup in ONE run. You orchestrate several steps IN ORDER, but you FIRST read the ground truth and SKIP anything already satisfied — you never redo done work. Unlike setup-environments (which is FORBIDDEN from exploring the codebase), this intent MAY read the project the way the infrastructure scout does: exploring dependencies, config, schemas and env references to understand what the project is IS permitted and expected here.',
+      );
+      lines.push('');
+      if (intent.instruction.trim()) {
+        lines.push(`User notes / continuation answer (verbatim): ${intent.instruction}`);
+        lines.push('');
+      }
+      lines.push('Work through these steps IN ORDER, skipping any that your ground-truth read shows is already satisfied:');
+      lines.push('');
+      lines.push(
+        '1. READ THE GROUND TRUTH FIRST. Before acting, inspect what already exists so you can skip done work: whether this is a git repo, whether the agent skills are installed (.claude/skills/emberflow-basics or the codex/home equivalents), whether emberflow.environments.json exists, whether ' +
+          manifestPath +
+          ' exists, and whether the project has operations beyond the default hello example (list-workflows). State briefly what you found. If there is NO git repository, STOP and tell the user the exact command to run — `git init && git add -A && git commit -m "initial"` — because every later step depends on git snapshotting and nothing here can proceed without it.',
+      );
+      lines.push('');
+      lines.push(
+        `2. GREENFIELD JUDGMENT + SCOUT. If ${manifestPath} is already present, SKIP this step (say so). Otherwise inspect the project the way the infrastructure scout does — dependencies (package.json + lockfiles, requirements.txt / pyproject.toml, go.mod, Gemfile, composer.json), config (docker-compose.yml, Dockerfile, .env.example NAMES only, prisma/schema.prisma, ORM/framework config), ORM schemas / migrations, env-var REFERENCES in source (process.env.X — NAMES only), HTTP clients / SDKs, and the project's own routes. If the project has real infrastructure (BROWNFIELD), run the full scout and WRITE ${manifestPath} describing it (version, scannedAt, greenfield:false, summary, items[] each with kind, name, evidence file+note, suggestedSecretRefs env-var NAMES only). If it is a bare scaffold (GREENFIELD — no databases, external APIs or providers), WRITE ${manifestPath} with "greenfield": true, empty items, and a one-line summary saying so — do NOT invent items to fill space. Manifest kinds: database, http-api, queue, cache, email, llm, auth, framework, storage, other.`,
+      );
+      lines.push('');
+      lines.push(
+        `3. SKILLS. If the agent skills are already installed (from your ground-truth read), SKIP this step. Otherwise install them by running the init CLI — it is idempotent and, because this project already has a config, adds ONLY the skills (and any missing .gitignore lines), leaving your config and operations untouched:`,
+      );
+      lines.push(
+        `     node ${EMBERFLOW_BIN} init --local --no-launch --no-git ${projectLanguage === 'javascript' ? '--js' : '--ts'}`,
+      );
+      lines.push(
+        `   Report which skill files it created. The ${projectLanguage === 'javascript' ? '--js' : '--ts'} flag matches this project's language so init doesn't refuse to run against the existing config. If init CANNOT install them (the command errors), emit the exact command for the user to run themselves and move on — don't fail the whole run over skills.`,
+      );
+      lines.push('');
+      lines.push(
+        '4. CONNECTION PROOF. This run itself proves the agent CLI works end-to-end — you ARE that agent. No separate action is needed; in your wrap-up, state which backend/model executed this run so the user knows the connection is verified.',
+      );
+      lines.push('');
+      lines.push(
+        `5. ENVIRONMENTS INTERVIEW. If emberflow.environments.json already configures environments, SKIP creating them (you may still refine on request). Otherwise write emberflow.environments.json (STRUCTURE ONLY) from what the user's notes and the project let you infer: a "defaultEnvironment" plus one entry per environment under "environments", using kebab/lower-case names (e.g. "dev", "staging", "prod"). Each environment's "secrets" is a LIST of key NAMES, never a value map; put base URLs and other non-secret config under "vars"; mark production-like environments "protected": true (this forces studio safe mode for them). Where a value is unknown, write a clearly-named placeholder (e.g. "baseUrl": "https://CHANGE-ME.example.com") rather than hunting for it. emberflow.environments.json is gitignored — mention that so the user isn't surprised it doesn't show in git status. END your message with NUMBERED questions (one per line) for the open choices: which environments, which is the default, which are production-like (protected), their base URLs, and which secret values the user must fill in via the studio's Manage Environment dialog. Follow-up messages (same panel thread) continue this interview and refine the file.`,
+      );
+      lines.push('');
+      lines.push(
+        'NEVER write secret or credential VALUES anywhere — not in emberflow.environments.json (which holds key NAMES only), not in ' +
+          manifestPath +
+          " (env-var NAMES only), and not in your output. Environment auth is set only via set-environment-auth (refs/names, never values); manifests carry names only. When auth or API keys are involved, scaffold at most the secret key NAMES and tell the user to enter the actual secret values in the studio's Manage Environment dialog — never in this chat.",
+      );
+      lines.push('');
+      lines.push(
+        '6. WRAP-UP. Finish with a checklist-shaped summary in three groups: DONE (what this run completed), NEEDS YOU (secret values to enter, and the numbered environment questions still unanswered), and SKIPPED — ALREADY DONE (steps your ground-truth read showed were already satisfied, so the user can see nothing was needlessly redone).',
+      );
       break;
     }
     case 'ask': {

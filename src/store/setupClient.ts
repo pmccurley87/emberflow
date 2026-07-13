@@ -14,6 +14,9 @@ const BASE = '/api';
 
 export interface SetupStatus {
   agents: DetectedAgent[];
+  /** Whether the project root is inside a git repo — agent features snapshot
+   *  changes with git, so the checklist requires this before enabling them. */
+  git: { repo: boolean };
   environments: {
     configured: boolean;
     count: number;
@@ -35,6 +38,7 @@ export interface SetupStatus {
  */
 export function setupProgress(status: SetupStatus): { done: number; total: number } {
   const rows = [
+    status.git.repo,
     status.agents.length > 0,
     status.environments.configured,
     status.environments.configured && status.environments.anyAuthConfigured,

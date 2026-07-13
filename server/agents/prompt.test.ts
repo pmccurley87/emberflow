@@ -513,6 +513,77 @@ describe('buildPrompt', () => {
     });
   });
 
+  describe('guided-setup', () => {
+    const guided: AgentIntent = {
+      action: 'guided-setup',
+      instruction: 'I want dev and prod environments.',
+    };
+
+    it('includes the user notes verbatim and orchestrates the steps IN ORDER, reading state first + skipping done work', () => {
+      const prompt = buildPrompt(guided, apisDir, relPath);
+      expect(prompt).toContain(guided.instruction);
+      expect(prompt).toMatch(/IN ORDER/);
+      expect(prompt).toMatch(/READ THE GROUND TRUTH FIRST/);
+      expect(prompt).toMatch(/skip(ping)? .*(done|already satisfied)/i);
+    });
+
+    it('explicitly PERMITS exploration (unlike setup-environments) — it may read the project like the scout', () => {
+      const prompt = buildPrompt(guided, apisDir, relPath);
+      expect(prompt).toMatch(/MAY read the project/i);
+      expect(prompt).toMatch(/the way the infrastructure scout does/i);
+      // Names the setup-environments no-explore rule it is inverting.
+      expect(prompt).toMatch(/setup-environments/);
+    });
+
+    it('covers greenfield vs brownfield judgment and writes the infrastructure manifest', () => {
+      const prompt = buildPrompt(guided, apisDir, relPath);
+      expect(prompt).toMatch(/GREENFIELD/);
+      expect(prompt).toMatch(/BROWNFIELD/);
+      expect(prompt).toMatch(/emberflow\/infrastructure\.json/);
+      expect(prompt).toMatch(/"greenfield": true/);
+    });
+
+    it('installs skills via the in-process bin with the project-language flag (--ts for a TS project)', () => {
+      const prompt = buildPrompt(guided, apisDir, relPath, [], 'typescript');
+      expect(prompt).toMatch(/emberflow\.mjs init --local --no-launch --no-git --ts/);
+    });
+
+    it('installs skills with --js for a javascript project', () => {
+      const prompt = buildPrompt(guided, apisDir, relPath, [], 'javascript');
+      expect(prompt).toMatch(/emberflow\.mjs init --local --no-launch --no-git --js/);
+    });
+
+    it('runs the environments interview and ENDS with numbered questions', () => {
+      const prompt = buildPrompt(guided, apisDir, relPath);
+      expect(prompt).toMatch(/ENVIRONMENTS INTERVIEW/);
+      expect(prompt).toMatch(/emberflow\.environments\.json/);
+      expect(prompt).toMatch(/END your message with NUMBERED questions/i);
+    });
+
+    it('never writes secret VALUES and states the connection-proof + wrap-up summary', () => {
+      const prompt = buildPrompt(guided, apisDir, relPath);
+      expect(prompt).toMatch(/NEVER write secret or credential VALUES/i);
+      expect(prompt).toMatch(/CONNECTION PROOF/);
+      expect(prompt).toMatch(/which backend\/model executed/i);
+      expect(prompt).toMatch(/WRAP-UP/);
+      expect(prompt).toMatch(/SKIPPED — ALREADY DONE/);
+    });
+
+    it('does NOT get the doctor rule, mocks guidance, or the known-infrastructure preamble (it writes the manifest)', () => {
+      const manifest = {
+        version: 1,
+        greenfield: false,
+        items: [
+          { id: 'pg', kind: 'database' as const, name: 'Postgres', evidence: [], suggestedSecretRefs: ['DATABASE_URL'], suggestedVars: [] },
+        ],
+      };
+      const prompt = buildPrompt(guided, apisDir, relPath, [], 'typescript', manifest);
+      expect(prompt).not.toMatch(/run doctor/i);
+      expect(prompt).not.toMatch(/"mocks"/);
+      expect(prompt).not.toMatch(/Known project infrastructure \(from/);
+    });
+  });
+
   describe('known-infrastructure preamble injection', () => {
     const editFlow: AgentIntent = { action: 'edit-flow', flowId: 'hello', instruction: 'x' };
     const manifest = {

@@ -7,19 +7,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string) => path.join(__dirname, '__fixtures__', name);
 
 describe('detectAgents', () => {
-  it('returns only the CLIs the injected probe reports as present, with parsed versions', () => {
+  it('returns only the CLIs the injected probe reports as present, with parsed versions and the bin', () => {
     expect(detectAgents((bin) => (bin === 'codex' ? { version: '0.142.5' } : undefined))).toEqual([
-      { kind: 'codex', version: '0.142.5' },
+      { kind: 'codex', version: '0.142.5', bin: 'codex' },
     ]);
     expect(detectAgents((bin) => (bin === 'claude' ? { version: '1.2.3' } : undefined))).toEqual([
-      { kind: 'claude', version: '1.2.3' },
+      { kind: 'claude', version: '1.2.3', bin: 'claude' },
     ]);
   });
 
   it('returns both when both are present', () => {
-    expect(detectAgents(() => ({ version: '1.0.0' }))).toEqual([
-      { kind: 'codex', version: '1.0.0' },
-      { kind: 'claude', version: '1.0.0' },
+    expect(detectAgents((bin) => (bin === 'codex' || bin === 'claude' ? { version: '1.0.0' } : undefined))).toEqual([
+      { kind: 'codex', version: '1.0.0', bin: 'codex' },
+      { kind: 'claude', version: '1.0.0', bin: 'claude' },
     ]);
   });
 
@@ -29,8 +29,27 @@ describe('detectAgents', () => {
 
   it('reports null version when present but the output has no parseable semver token', () => {
     expect(detectAgents((bin) => (bin === 'codex' ? { version: null } : undefined))).toEqual([
-      { kind: 'codex', version: null },
+      { kind: 'codex', version: null, bin: 'codex' },
     ]);
+  });
+
+  it('picks the NEWEST version across candidate locations, not the PATH shim', () => {
+    // PATH `codex` is pinned old; the ChatGPT.app bundle is newer — the bundle wins.
+    const versions: Record<string, string> = {
+      codex: '0.142.5',
+      '/Applications/ChatGPT.app/Contents/Resources/codex': '0.156.0',
+    };
+    const found = detectAgents((bin) => (versions[bin] ? { version: versions[bin] } : undefined));
+    expect(found).toEqual([
+      { kind: 'codex', version: '0.156.0', bin: '/Applications/ChatGPT.app/Contents/Resources/codex' },
+    ]);
+  });
+
+  it('a parseable version beats a null one regardless of probe order', () => {
+    const found = detectAgents((bin) =>
+      bin === 'codex' ? { version: null } : bin === '/opt/homebrew/bin/codex' ? { version: '0.1.0' } : undefined,
+    );
+    expect(found).toEqual([{ kind: 'codex', version: '0.1.0', bin: '/opt/homebrew/bin/codex' }]);
   });
 
   it('defaults to a real PATH probe that returns an array', () => {

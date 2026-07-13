@@ -4,7 +4,7 @@ import { createLoginFlow } from '../flows/login-flow';
 import * as serverRunner from './serverRunner';
 import * as agentClient from './agentClient';
 import type { WorkflowDefinition } from '../engine';
-import type { ScenarioTestReport, ServerRunHandlers } from './serverRunner';
+import type { ScenarioTestReport, ServerRunHandlers, StepResult } from './serverRunner';
 
 vi.mock('./serverRunner', async () => {
   const actual = await vi.importActual<typeof import('./serverRunner')>('./serverRunner');
@@ -1252,5 +1252,251 @@ describe('builderStore server-run finished event → errorHandler tag', () => {
 
     const entry = useBuilderStore.getState().runHistory.find((r) => r.id === 'run-2');
     expect(entry?.errorHandler).toBeUndefined();
+  });
+});
+
+describe('builderStore subflow step drill-in', () => {
+  const drillFlow = (id: string, name: string, nodeIds: string[]): WorkflowDefinition => ({
+    id,
+    name,
+    version: 1,
+    nodes: nodeIds.map((nid, i) => ({
+      id: nid,
+      type: 'Noop',
+      label: nid,
+      position: { x: i * 100, y: 0 },
+      config: {},
+    })),
+    edges: [],
+    createdAt: '2026-07-13T00:00:00Z',
+    updatedAt: '2026-07-13T00:00:00Z',
+  });
+
+  let handlers: ServerRunHandlers | undefined;
+
+  beforeEach(() => {
+    handlers = undefined;
+    vi.mocked(serverRunner.startServerRun).mockReset().mockResolvedValue('run-d');
+    vi.mocked(serverRunner.stepServerRun).mockReset();
+    vi.mocked(serverRunner.subscribeServerRun).mockReset().mockImplementation((_runId, h) => {
+      handlers = h;
+      return () => {};
+    });
+    useBuilderStore.setState({
+      flow: drillFlow('parent', 'Parent Flow', ['start', 'sub', 'finish']),
+      shelf: [drillFlow('child', 'Child Flow', ['c1', 'c2']), drillFlow('grandchild', 'Grandchild Flow', ['g1'])],
+      run: null,
+      logs: [],
+      activeRun: null,
+      activeServerRunId: null,
+      runnerOnline: true,
+      runHistory: [],
+      activeScenarioId: null,
+      stepMode: false,
+      stepDrill: [],
+      drillPeek: null,
+      selectedNodeId: null,
+    });
+  });
+
+  /** One Step click: queue the next step response and drive stepRun. */
+  const step = (result: StepResult): Promise<void> => {
+    vi.mocked(serverRunner.stepServerRun).mockResolvedValueOnce(result);
+    return useBuilderStore.getState().stepRun();
+  };
+
+  it('entered pushes a drill level, swaps the view to the child, and routes nodeState by workflowId', async () => {
+    await step({ done: false }); // first parent node
+    await step({ done: false, entered: { workflowId: 'child', nodeId: 'sub' } });
+
+    let s = useBuilderStore.getState();
+    expect(s.flow.id).toBe('child');
+    expect(s.stepDrill).toHaveLength(1);
+    expect(s.stepDrill[0]).toMatchObject({ workflowId: 'child', viaNodeId: 'sub' });
+    expect(s.stepDrill[0].savedFlow.id).toBe('parent');
+    // Synthetic child run: running, no node states yet (first child node runs
+    // on the NEXT step), same id as the root run so SSE routing applies.
+    expect(s.run?.workflowId).toBe('child');
+    expect(s.run?.status).toBe('running');
+    expect(s.run?.nodeStates).toEqual({});
+    expect(s.run?.id).toBe('run-d');
+    // The live server run and step mode are untouched by drilling.
+    expect(s.activeServerRunId).toBe('run-d');
+    expect(s.stepMode).toBe(true);
+
+    // Child workflowId → lights the visible (child) run.
+    handlers!.onNodeState('child', 'c1', { status: 'running' });
+    expect(useBuilderStore.getState().run?.nodeStates.c1?.status).toBe('running');
+
+    // Parent workflowId → lands on the stashed parent run, not the child view.
+    handlers!.onNodeState('parent', 'sub', { status: 'running' });
+    s = useBuilderStore.getState();
+    expect(s.run?.nodeStates.sub).toBeUndefined();
+    expect(s.stepDrill[0].savedRun?.nodeStates.sub?.status).toBe('running');
+
+    // Unknown workflowId → ignored.
+    handlers!.onNodeState('elsewhere', 'x', { status: 'running' });
+    expect(useBuilderStore.getState().run?.nodeStates.x).toBeUndefined();
+  });
+
+  it('drilling does not clear the root run logs', async () => {
+    await step({ done: false });
+    useBuilderStore.setState({
+      logs: [{ timestamp: 't', level: 'info', runId: 'run-d', message: 'parent log' }],
+    });
+    await step({ done: false, entered: { workflowId: 'child', nodeId: 'sub' } });
+    expect(useBuilderStore.getState().logs.map((l) => l.message)).toEqual(['parent log']);
+  });
+
+  it('exited restores the parent view including its updated Subflow node state and selection', async () => {
+    await step({ done: false });
+    useBuilderStore.setState({ selectedNodeId: 'start' });
+    await step({ done: false, entered: { workflowId: 'child', nodeId: 'sub' } });
+    expect(useBuilderStore.getState().selectedNodeId).toBeNull();
+
+    handlers!.onNodeState('child', 'c1', { status: 'succeeded' });
+    handlers!.onNodeState('parent', 'sub', { status: 'succeeded' });
+    await step({ done: false, exited: true });
+
+    const s = useBuilderStore.getState();
+    expect(s.flow.id).toBe('parent');
+    expect(s.stepDrill).toHaveLength(0);
+    expect(s.run?.workflowId).toBe('parent');
+    expect(s.run?.nodeStates.sub?.status).toBe('succeeded');
+    expect(s.selectedNodeId).toBe('start');
+  });
+
+  it('nested enter/enter/exit/exit walks the stack one level at a time', async () => {
+    await step({ done: false, entered: { workflowId: 'child', nodeId: 'sub' } });
+    await step({ done: false, entered: { workflowId: 'grandchild', nodeId: 'c2' } });
+
+    let s = useBuilderStore.getState();
+    expect(s.flow.id).toBe('grandchild');
+    expect(s.stepDrill.map((d) => d.workflowId)).toEqual(['child', 'grandchild']);
+    expect(s.stepDrill[1].savedFlow.id).toBe('child');
+
+    // Mid-level (child) states land on its stashed run while two deep.
+    handlers!.onNodeState('child', 'c2', { status: 'running' });
+    s = useBuilderStore.getState();
+    expect(s.stepDrill[1].savedRun?.nodeStates.c2?.status).toBe('running');
+
+    await step({ done: false, exited: true });
+    s = useBuilderStore.getState();
+    expect(s.flow.id).toBe('child');
+    expect(s.stepDrill).toHaveLength(1);
+    expect(s.run?.nodeStates.c2?.status).toBe('running');
+
+    await step({ done: false, exited: true });
+    s = useBuilderStore.getState();
+    expect(s.flow.id).toBe('parent');
+    expect(s.stepDrill).toHaveLength(0);
+  });
+
+  it('entered with an unknown child flow id stays on the parent but pushes a placeholder level', async () => {
+    await step({ done: false, entered: { workflowId: 'missing', nodeId: 'sub' } });
+    let s = useBuilderStore.getState();
+    expect(s.flow.id).toBe('parent');
+    // The server's drill stack grew — the client mirrors the depth with a
+    // placeholder so the matching `exited` pops the right level.
+    expect(s.stepDrill).toHaveLength(1);
+    expect(s.stepDrill[0]).toMatchObject({ workflowId: 'missing', viaNodeId: 'sub', placeholder: true });
+    expect(s.stepDrill[0].savedFlow.id).toBe('parent');
+
+    // Parent states keep applying to the visible run as before.
+    handlers!.onNodeState('parent', 'sub', { status: 'running' });
+    expect(useBuilderStore.getState().run?.nodeStates.sub?.status).toBe('running');
+
+    // The matching exited pops the placeholder and leaves the parent view —
+    // including states received while "inside" — untouched.
+    await step({ done: false, exited: true });
+    s = useBuilderStore.getState();
+    expect(s.flow.id).toBe('parent');
+    expect(s.stepDrill).toHaveLength(0);
+    expect(s.run?.nodeStates.sub?.status).toBe('running');
+  });
+
+  it('exited+entered in one step (Subflow retry) pops the failed child before pushing the fresh one', async () => {
+    await step({ done: false, entered: { workflowId: 'child', nodeId: 'sub' } });
+    expect(useBuilderStore.getState().flow.id).toBe('child');
+
+    // The retrying Subflow node pops its failed child AND re-enters a new
+    // child run in the same composite step.
+    await step({ done: false, exited: true, entered: { workflowId: 'child', nodeId: 'sub' } });
+    const s = useBuilderStore.getState();
+    expect(s.flow.id).toBe('child');
+    expect(s.stepDrill).toHaveLength(1);
+    expect(s.stepDrill[0].savedFlow.id).toBe('parent');
+    // Fresh synthetic child run for the retry attempt.
+    expect(s.run?.workflowId).toBe('child');
+    expect(s.run?.nodeStates).toEqual({});
+
+    await step({ done: false, exited: true });
+    expect(useBuilderStore.getState().flow.id).toBe('parent');
+    expect(useBuilderStore.getState().stepDrill).toHaveLength(0);
+  });
+
+  it('exited plus done pops the drill and ends the live run', async () => {
+    await step({ done: false, entered: { workflowId: 'child', nodeId: 'sub' } });
+    await step({ done: true, exited: true });
+    const s = useBuilderStore.getState();
+    expect(s.flow.id).toBe('parent');
+    expect(s.stepDrill).toHaveLength(0);
+    expect(s.activeServerRunId).toBeNull();
+  });
+
+  it('peek shows an ancestor without popping; child states during the peek still land on the child run', async () => {
+    await step({ done: false, entered: { workflowId: 'child', nodeId: 'sub' } });
+
+    useBuilderStore.getState().peekDrill(0);
+    let s = useBuilderStore.getState();
+    expect(s.drillPeek).toBe(0);
+    // View-only: the drill stack and the live (deepest) level are untouched —
+    // the runbook derives the peeked flow/run from stepDrill[drillPeek].
+    expect(s.stepDrill).toHaveLength(1);
+    expect(s.flow.id).toBe('child');
+    expect(s.stepDrill[0].savedFlow.id).toBe('parent');
+
+    // Child states arriving during the peek land on the child's (live) run.
+    handlers!.onNodeState('child', 'c1', { status: 'succeeded' });
+    expect(useBuilderStore.getState().run?.nodeStates.c1?.status).toBe('succeeded');
+    // Parent states still land on the stashed parent run.
+    handlers!.onNodeState('parent', 'sub', { status: 'running' });
+    expect(useBuilderStore.getState().stepDrill[0].savedRun?.nodeStates.sub?.status).toBe('running');
+
+    // The last crumb returns to the deepest level.
+    useBuilderStore.getState().peekDrill(null);
+    expect(useBuilderStore.getState().drillPeek).toBeNull();
+
+    // Out-of-range peek indexes clear rather than dangle.
+    useBuilderStore.getState().peekDrill(7);
+    expect(useBuilderStore.getState().drillPeek).toBeNull();
+  });
+
+  it('a further entered while peeking resets the peek to the new deepest level', async () => {
+    await step({ done: false, entered: { workflowId: 'child', nodeId: 'sub' } });
+    useBuilderStore.getState().peekDrill(0);
+    await step({ done: false, entered: { workflowId: 'grandchild', nodeId: 'c2' } });
+    const s = useBuilderStore.getState();
+    expect(s.drillPeek).toBeNull();
+    expect(s.flow.id).toBe('grandchild');
+    expect(s.stepDrill).toHaveLength(2);
+  });
+
+  it('the finished SSE event unwinds any remaining drill before recording the root run', async () => {
+    await step({ done: false, entered: { workflowId: 'child', nodeId: 'sub' } });
+    handlers!.onFinished({
+      id: 'run-d',
+      workflowId: 'parent',
+      status: 'failed',
+      startedAt: '2026-07-13T10:00:00Z',
+      completedAt: '2026-07-13T10:00:01Z',
+      nodeStates: {},
+    });
+    const s = useBuilderStore.getState();
+    expect(s.flow.id).toBe('parent');
+    expect(s.stepDrill).toHaveLength(0);
+    expect(s.run?.id).toBe('run-d');
+    expect(s.run?.workflowId).toBe('parent');
+    expect(s.runHistory[0]?.id).toBe('run-d');
   });
 });

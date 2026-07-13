@@ -2,7 +2,7 @@
 name: emberflow-model-process
 description: Use when modeling or MIGRATING EXISTING functionality into Emberflow — a single process (script, controller, job, runbook) as one operation, or a whole subsystem (a worker, a pipeline, a service's job handlers) as an API of operations. Emphasises verbatim porting, branch fidelity, determinism, and (at subsystem scale) decomposition and seam verification. For designing something brand-new, use emberflow-new-workflow instead.
 metadata:
-  version: 2.7.0
+  version: 2.8.0
 ---
 
 # Modeling an existing process as an Emberflow operation
@@ -13,6 +13,12 @@ already-working process into an operation that mirrors it — the goal is
 documentation of the system. Sections 1–6 govern each individual port; when
 the source is a whole subsystem spanning several operations, ALSO apply
 **At subsystem scale** at the end.
+
+**Fidelity means preserving behaviour and real execution boundaries, not
+copying the source's file, class, helper-function, or implementation-task
+boundaries into the canvas.** The visible graph tells the domain process in the
+language of its intended readers; existing functions sit underneath those
+domain steps as their implementations.
 
 If the process is (or is triggered by) an HTTP endpoint, model it as an HTTP
 operation: create `emberflow/apis/<api>/<folder…>/<name>.json` with `id` equal to
@@ -54,8 +60,29 @@ secret NAMES instead of re-deriving infrastructure the manifest already names.
 4. **Scenarios.** "Beyond one scenario per branch of the source, which
    specific cases do you want named and asserted?" (A known incident, a
    particular account shape, the case that motivated the port.)
+5. **Domain read-through.** "Who must be able to read this flow, and which
+   decisions or conclusions must they be able to explain from the canvas?"
+   Skip the question when the user has already named the audience and the
+   domain questions. Record those terms verbatim; they become node and branch
+   labels rather than names copied from helper functions.
 
 Confirm the summary before porting. The answers feed sections 4–6.
+
+### Process-model proposal — required before implementation
+
+Present one compact proposal before authoring operation files. It contains:
+
+1. The process trigger and outcome in one sentence.
+2. The intended reader and what they must be able to explain from the canvas.
+3. Each proposed operation boundary and the real trigger, durability, retry, or
+   lifecycle reason that justifies it.
+4. The visible read-through in domain language, including meaningful decisions
+   and intermediate conclusions.
+5. How existing source functions map underneath those visible steps, plus any
+   genuinely opaque dependency or deliberate divergence.
+
+Get the user's approval when working interactively. Route names, file lists,
+helper names, or implementation tasks are not a substitute for this proposal.
 
 ## 1. Read the source first, fully
 
@@ -68,6 +95,13 @@ runbook. Identify:
 - **The side effects** — DB writes, external POSTs, emails, queue sends. These
   become custom nodes marked `effects: 'mutation'`.
 - **The inputs and external data sources** it reads.
+- **The domain story** — trigger, meaningful actions and decisions, and the
+  outcome the intended reader cares about. Keep this separate from source helper
+  calls, modules, controllers, repositories, and technical layers.
+- **The real process boundaries** — independently triggered HTTP/queue/cron
+  handlers, durable hand-offs, separate lifecycles, and independently invoked
+  reusable domain processes. A function call or file boundary alone is not a
+  process boundary.
 
 Do not skim. A faithful model requires knowing what the code actually does,
 including the edge cases.
@@ -94,17 +128,31 @@ stale constants are findings worth reporting — not things to tidy away.
 
 ## 4. Map the shape onto Emberflow
 
+Before choosing files or operation ids, write the visible domain read-through
+as `trigger → domain action/decision → outcome`. A person in the audience
+named during intake must be able to follow that sequence from node and branch
+labels without opening the node implementations. Then map the existing source
+underneath it:
+
 - Request in → an `Input` node reading `{ params, query, body, headers }` (for an
   HTTP op); response out → a `Response` node `{ status, body }` per real exit,
   matching the source's status codes (internal flow → `Result`).
-- Linear steps → a chain of nodes with `inputMap` + edges.
+- Domain-meaningful linear steps → a chain of nodes with `inputMap` + edges.
+  A node may call one existing function or coordinate several helpers; its
+  boundary is the result the intended reader needs to inspect, not the number of
+  functions involved.
 - Decisions → `Conditional` (ordered rules) or `Route` (switch on a field), one
   branch per real code path, including the else/default. A branch that returns a
   different HTTP status gets its own `Response`.
 - Loops over collections → `ForEach`/`Collect`.
-- Sub-procedures the source factors out → a `Subflow` node calling a separate
-  operation (mirror the real call structure — if `handleA()` calls `handleB()`,
-  operation A calls operation B).
+- Existing helper functions and technical layers → implementation code beneath
+  the relevant domain node. Promote a helper to its own visible node when it
+  produces a meaningful intermediate domain result, owns an infrastructure
+  or effect boundary, or needs distinct retry/inspection behaviour.
+- A coherent in-process domain process that is repeated or independently
+  useful → a `Subflow` node calling a separate internal operation. Subflow
+  extraction must make the domain read-through clearer. Do not mirror a
+  helper call merely because the source factors it out.
 - Effects → `effects: 'mutation'` nodes that dry-run by default and only commit
   under an explicit opt-in. The commit path performs the REAL side effect the
   source performs — the same insert, the same webhook, the same send. A
@@ -122,6 +170,25 @@ nodes is expected, it's how a process becomes real code. The only rule: register
 a node's implementation in `registerNodes` before you reference its `type`; the
 runner rejects an unregistered type (a name with no implementation), but a type
 you register in the same change is exactly how you model the step.
+
+### Keep domain logic visible
+
+A generic bridge such as `RunStage`, `ExecuteScript`, or `CallService` may be a
+leaf implementation detail, but it is not a faithful visible model when it
+contains several domain actions or decisions. A graph shaped only as
+`Input → RunWholeStage → Result` documents plumbing, not the process.
+
+For each bridge or broad adapter, inspect the source it invokes:
+
+1. Put each reader-relevant decision and intermediate conclusion on the
+   canvas as a specifically named node or branch.
+2. Keep formulas and constants in the existing implementation when duplicating
+   them would risk drift; call that implementation from the domain-named node.
+3. Expose the inputs, calculation basis, outcome, and provenance needed to
+   explain the result in the run trace.
+4. If the dependency is genuinely opaque and cannot yet be decomposed, label it
+   explicitly as an opaque external step and report the model as
+   `process-logic-opaque`; do not call it executable documentation.
 
 ## 5. Make it deterministic and reproducible
 
@@ -171,10 +238,13 @@ phases — and a wrongly-shaped mock masks every one of them.
   every constant in a table (that table becomes the fidelity checklist all
   reviews check against), external dependencies per phase, and the data
   shapes phases pass each other.
-- **One operation per process boundary.** A queue or cron hop in the source is
-  an operation boundary in the model — do NOT collapse an async boundary into
-  a synchronous `Subflow` (the fan-out op models the *send*; the per-job op is
-  invoked separately). A sub-procedure called in-process IS a `Subflow`.
+- **One operation per real process boundary.** A queue or cron hop in the source
+  is an operation boundary in the model — do NOT collapse an async boundary
+  into a synchronous `Subflow` (the fan-out op models the *send*; the per-job op
+  is invoked separately). Files, classes, helper functions, source-code phases,
+  implementation-plan tasks, and test seams are NOT operation boundaries. An
+  in-process helper normally stays beneath a node; use a `Subflow` only for a
+  coherent repeated or independently useful domain process.
 - **Inventory existing nodes before authoring new ones** — migrations often
   land where partial models already exist. Reuse and extend.
 - **Producers own their output contracts.** If a consumer needs rows, the
@@ -204,6 +274,9 @@ phases — and a wrongly-shaped mock masks every one of them.
 Someone who knows the original system should read the flow and recognise it
 exactly — same steps, same decisions, same constants, same effects — with every
 divergence explicitly marked. If they'd be surprised by a branch, you modeled it wrong.
+The intended reader should also be able to explain from the canvas why the
+process reached its conclusion. If they must open a generic bridge node or read
+source helper names to discover the domain logic, the model is too opaque.
 For a subsystem migration the same bar holds system-wide, and both worlds must
 work: every scenario green in mock mode, and the real path proven or explicitly
 pending.

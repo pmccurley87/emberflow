@@ -34,8 +34,9 @@ import { buildApiStore, buildRegistries, requireProjectWhenExplicit } from './pr
 import { nodesPayload } from './nodesPayload';
 import { openBrowser } from './openBrowser';
 import { AgentRunManager, AgentStartError } from './agents/runManager';
+import { isGitRepo } from './agents/gitScope';
 import { isMountablePath } from './pathGuard';
-import { detectAgents } from './agents/detect';
+import { detectAgentsCached } from './agents/detect';
 import type { AgentEvent } from './agents/types';
 import type { AgentIntent } from './agents/prompt';
 import { ExpressAdapter } from './runtime/expressAdapter';
@@ -719,6 +720,8 @@ api.post('/runs', async (req: Request, res: Response) => {
       input: effectiveInput,
       mockRun,
       mocks: effectiveMocks,
+      // Step-mode runs get drill-in subflow stepping (see RunRegistry.step).
+      stepped: mode === 'step',
     }));
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -810,22 +813,24 @@ api.post('/node-run', async (req: Request, res: Response) => {
 });
 
 api.post('/runs/:id/step', async (req, res) => {
-  const handle = runs.get(req.params.id);
-  if (!handle) {
+  // Drill-aware composite step: stepping INTO a Subflow reports
+  // `entered: { workflowId, nodeId }`, completing the child reports
+  // `exited: true` (see RunRegistry.step). Plain steps report just `done`.
+  const result = await runs.step(req.params.id);
+  if (!result) {
     res.status(404).json({ error: `Unknown run: ${req.params.id}` });
     return;
   }
-  const more = await handle.step();
-  res.json({ done: !more });
+  res.json(result);
 });
 
 api.post('/runs/:id/cancel', (req, res) => {
-  const handle = runs.get(req.params.id);
-  if (!handle) {
+  // Drill-aware: a stepped run drilled into subflows also cancels every
+  // stacked child and unblocks the parent executions (see RunRegistry.cancel).
+  if (!runs.cancel(req.params.id)) {
     res.status(404).json({ error: `Unknown run: ${req.params.id}` });
     return;
   }
-  handle.cancel();
   res.status(204).end();
 });
 
@@ -851,7 +856,7 @@ api.get('/runs/:id/events', (req, res) => {
 });
 
 api.get('/agent/available', (_req: Request, res: Response) => {
-  res.json({ agents: detectAgents() });
+  res.json({ agents: detectAgentsCached() });
 });
 
 // First-run onboarding aggregate for the Welcome checklist (studio's
@@ -874,7 +879,10 @@ api.get('/setup-status', (_req: Request, res: Response) => {
   // A pristine project ships exactly the single `default/hello` example op.
   const onlyHello = ops.length === 1 && ops[0]?.id === 'default/hello';
   res.json({
-    agents: detectAgents(),
+    agents: detectAgentsCached(),
+    // Agent features snapshot changes with git (server/agents/runManager.ts);
+    // the checklist gates them on this. Same notion gitScope's isGitRepo uses.
+    git: { repo: isGitRepo(root) },
     environments: {
       configured: envs.configured,
       // The synthesized "local" fallback is "no environments yet" — report 0.
@@ -933,11 +941,12 @@ api.post('/agent', (req: Request, res: Response) => {
     intent.action !== 'setup-auth' &&
     intent.action !== 'setup-environments' &&
     intent.action !== 'scout-infrastructure' &&
+    intent.action !== 'guided-setup' &&
     intent.action !== 'cover-operation' &&
     intent.action !== 'ask'
   ) {
     res.status(400).json({
-      error: `Unsupported intent.action: ${intent.action}. Must be one of new-scenario, edit-node, edit-flow, new-operation, setup-auth, setup-environments, scout-infrastructure, cover-operation, ask.`,
+      error: `Unsupported intent.action: ${intent.action}. Must be one of new-scenario, edit-node, edit-flow, new-operation, setup-auth, setup-environments, scout-infrastructure, guided-setup, cover-operation, ask.`,
     });
     return;
   }
@@ -951,7 +960,11 @@ api.post('/agent', (req: Request, res: Response) => {
       res.status(400).json({ error: 'Body must include intent: { action: "setup-auth", environment, instruction }' });
       return;
     }
-  } else if (intent.action === 'setup-environments' || intent.action === 'scout-infrastructure') {
+  } else if (
+    intent.action === 'setup-environments' ||
+    intent.action === 'scout-infrastructure' ||
+    intent.action === 'guided-setup'
+  ) {
     // instruction alone is required, already validated above; no flowId/environment needed.
   } else if (intent.action === 'ask') {
     if (intent.flowId !== undefined && typeof intent.flowId !== 'string') {
@@ -1173,6 +1186,22 @@ if (serveStudio) {
       `[runner] EMBERFLOW_SERVE_STUDIO=1 but no studio-dist found near ${here} — run \`npm run build:studio\``,
     );
   }
+}
+
+// Agent CLIs and node executions must not outlive the runner: agents are
+// spawned detached (their own process group), so without this a killed runner
+// leaves an orphaned agent editing the project — and possibly writing files
+// long after the studio is gone (observed in the wild). Cancel everything,
+// then exit.
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    try {
+      agentRuns.shutdown();
+      runs.shutdown();
+    } finally {
+      process.exit(0);
+    }
+  });
 }
 
 app.listen(PORT, HOST, () => {

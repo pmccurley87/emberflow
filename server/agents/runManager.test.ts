@@ -127,6 +127,15 @@ describe('AgentRunManager', () => {
     await collectUntilDone(manager, id);
   });
 
+  it('shutdown cancels the active run (and no-ops when idle)', async () => {
+    const manager = new AgentRunManager(projectDir, flowsDir, pathOf);
+    expect(() => manager.shutdown()).not.toThrow(); // idle: nothing active
+    const id = manager.start(intent);
+    expect(() => manager.shutdown()).not.toThrow();
+    // The cancelled run must still reach a terminal state — no hung adapter.
+    await collectUntilDone(manager, id);
+  });
+
   it('rejects a flowId that tries to escape flowsDir', () => {
     const manager = new AgentRunManager(projectDir, flowsDir, pathOf);
     const badIntent: AgentIntent = { action: 'edit-flow', flowId: '../../etc/passwd', instruction: 'x' };

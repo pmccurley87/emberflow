@@ -14,7 +14,10 @@ export interface ErrorHandlerTag {
 }
 
 export interface ServerRunHandlers {
-  onNodeState(nodeId: string, state: NodeRunState): void;
+  /** `workflowId` is the flow the node belongs to: the root flow for parent
+   *  nodes, a child flow's id for nodes executed inside a drilled subflow
+   *  (stepped runs stream child states on the root run's SSE). */
+  onNodeState(workflowId: string, nodeId: string, state: NodeRunState): void;
   onLog(line: LogLine): void;
   onFinished(run: WorkflowRun, errorHandler?: ErrorHandlerTag): void;
   onError(message: string): void;
@@ -373,11 +376,21 @@ export async function runNodeOnServer(req: NodeRunRequest): Promise<NodeRunResul
   return (await response.json()) as NodeRunResult;
 }
 
-export async function stepServerRun(runId: string): Promise<boolean> {
+/** One step of a stepped run. `done` mirrors the old boolean contract;
+ *  stepping onto a Subflow node reports `entered` (the child flow's id plus
+ *  the PARENT's Subflow node id — the entered step itself executes no child
+ *  node), and completing a drilled child reports `exited` (which can co-occur
+ *  with `done` when the child was the last node, or when the child failed). */
+export interface StepResult {
+  done: boolean;
+  entered?: { workflowId: string; nodeId: string };
+  exited?: true;
+}
+
+export async function stepServerRun(runId: string): Promise<StepResult> {
   const response = await fetch(`${BASE}/runs/${runId}/step`, { method: 'POST' });
   if (!response.ok) throw new Error(`Step failed (HTTP ${response.status})`);
-  const { done } = (await response.json()) as { done: boolean };
-  return done;
+  return (await response.json()) as StepResult;
 }
 
 export async function cancelServerRun(runId: string): Promise<void> {
@@ -390,10 +403,11 @@ export function subscribeServerRun(runId: string, handlers: ServerRunHandlers): 
 
   source.addEventListener('nodeState', (event) => {
     const data = JSON.parse((event as MessageEvent).data) as {
+      workflowId: string;
       nodeId: string;
       state: NodeRunState;
     };
-    handlers.onNodeState(data.nodeId, data.state);
+    handlers.onNodeState(data.workflowId, data.nodeId, data.state);
   });
   source.addEventListener('log', (event) => {
     const data = JSON.parse((event as MessageEvent).data) as { line: LogLine };

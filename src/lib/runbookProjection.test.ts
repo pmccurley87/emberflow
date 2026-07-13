@@ -209,6 +209,49 @@ describe('projectRunbook', () => {
     expect(proj.steps.get('onStep')!.tech).toBe(`#2 Http · 50ms · ERROR: ${'x'.repeat(80)}`);
   });
 
+  it('drilled view: outcome and receipt match caller-prefixed child log ids (`caller/nodeId`); undrilled does not', () => {
+    const doc = makeDoc();
+    const run = makeRun({
+      nodeStates: {
+        onStep: {
+          status: 'succeeded',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          completedAt: '2026-01-01T00:00:00.100Z',
+          input: { a: 1 },
+          output: { x: 1 },
+        },
+      },
+    });
+    // How a drilled subflow child's logs arrive: nodeId prefixed with the
+    // caller chain (`sub/onStep`, nested per level).
+    const logs: LogLine[] = [
+      { timestamp: 't1', level: 'debug', runId: 'run-1', nodeId: 'sub/onStep', message: '#4 ▶ execute' },
+      { timestamp: 't2', level: 'info', runId: 'run-1', nodeId: 'sub/onStep', message: 'child outcome' },
+    ];
+
+    const drilled = projectRunbook(doc, run, logs, [], FLOW_ID, true);
+    expect(drilled.steps.get('onStep')!.outcome).toBe('child outcome');
+    expect(drilled.steps.get('onStep')!.tech).toBe('#4 Http · 100ms · in[a] → out[x]');
+
+    // Undrilled: suffix matching stays off so a parent node can never pick
+    // up a same-named child's prefixed lines.
+    const plain = projectRunbook(doc, run, logs, [], FLOW_ID);
+    expect(plain.steps.get('onStep')!.outcome).toBe('');
+    expect(plain.steps.get('onStep')!.tech).toBe('Http · 100ms · in[a] → out[x]');
+  });
+
+  it('drilled view: a plain (unprefixed) id must not suffix-match another node ending with the same segment', () => {
+    const doc = makeDoc();
+    const logs: LogLine[] = [
+      // `sub/onStep` ends with `/onStep` but NOT with `/Step` etc.; also an
+      // exact-id line for a different node must not bleed over.
+      { timestamp: 't1', level: 'info', runId: 'run-1', nodeId: 'cond', message: 'cond outcome' },
+    ];
+    const drilled = projectRunbook(doc, makeRun(), logs, [], FLOW_ID, true);
+    expect(drilled.steps.get('onStep')!.outcome).toBe('');
+    expect(drilled.steps.get('cond')!.outcome).toBe('cond outcome');
+  });
+
   it('tech line: no receipt yet means no #N prefix', () => {
     const doc = makeDoc();
     const run = makeRun({ nodeStates: { onStep: { status: 'idle' } } });

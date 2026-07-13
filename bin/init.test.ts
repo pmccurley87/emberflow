@@ -1,9 +1,20 @@
 // bin/init.test.ts
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runInit, tsxResolvable } from './init';
+
+/** Run git in `dir`, returning trimmed stdout. Pins an identity so commits work
+ *  on a machine/CI with no global git config. */
+function git(dir: string, args: string[]): string {
+  return execFileSync(
+    'git',
+    ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args],
+    { cwd: dir, encoding: 'utf8' },
+  ).trim();
+}
 
 const dirs: string[] = [];
 function scratch(): string { const d = mkdtempSync(join(tmpdir(), 'ef-init-')); dirs.push(d); return d; }
@@ -149,6 +160,89 @@ describe('runInit', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe('runInit git bootstrap', () => {
+  it('git-inits the folder and makes the load-bearing initial commit', async () => {
+    const d = scratch();
+    await runInit(d, { skills: false });
+    expect(existsSync(join(d, '.git'))).toBe(true);
+    // Exactly one commit, the scaffold commit — the snapshot/diff/revert safety
+    // net needs a real HEAD to diff against (an unborn HEAD can't be reverted).
+    expect(git(d, ['rev-list', '--count', 'HEAD'])).toBe('1');
+    expect(git(d, ['log', '--oneline'])).toContain('chore: emberflow init');
+  });
+
+  it('commits ONLY init-scaffolded files, never the user’s pre-existing code', async () => {
+    const d = scratch();
+    // A fresh dir may already hold the user's own uncommitted app code.
+    writeFileSync(join(d, 'app.js'), 'console.log("mine");\n');
+    await runInit(d, { skills: false });
+
+    const tracked = git(d, ['ls-tree', '-r', 'HEAD', '--name-only']).split('\n');
+    expect(tracked).toContain('emberflow.config.mjs');
+    expect(tracked).toContain('emberflow/apis/default/hello.json');
+    expect(tracked).toContain('.gitignore');
+    // The user's file was NOT swept into the commit (no `git add -A`).
+    expect(tracked).not.toContain('app.js');
+    // It's still there, just untracked.
+    expect(git(d, ['status', '--porcelain'])).toContain('?? app.js');
+  });
+
+  it('--no-git (git: false) skips repo creation entirely', async () => {
+    const d = scratch();
+    await runInit(d, { skills: false, git: false });
+    expect(existsSync(join(d, '.git'))).toBe(false);
+  });
+
+  it('leaves a pre-existing repo untouched — no nested repo, no extra commit', async () => {
+    const d = scratch();
+    git(d, ['init']);
+    writeFileSync(join(d, 'README.md'), '# mine\n');
+    git(d, ['add', '-A']);
+    git(d, ['commit', '-m', 'user commit']);
+    const before = git(d, ['rev-list', '--count', 'HEAD']);
+
+    await runInit(d, { skills: false });
+
+    // `d` is still the repo root — init did not nest a new repo under it
+    // (--show-cdup is empty only when cwd IS the toplevel).
+    expect(git(d, ['rev-parse', '--show-cdup'])).toBe('');
+    expect(existsSync(join(d, 'emberflow', 'apis', 'default'))).toBe(true);
+    // init added no commit of its own.
+    expect(git(d, ['rev-list', '--count', 'HEAD'])).toBe(before);
+    // The scaffold is present but uncommitted — the user commits on their terms.
+    expect(git(d, ['status', '--porcelain'])).toContain('emberflow.config.mjs');
+  });
+
+  it('re-running init on an already-scaffolded, non-git dir makes an empty anchor commit (no unborn HEAD)', async () => {
+    const d = scratch();
+    // Pre-scaffold everything init would normally write, as if a prior
+    // `emberflow init --no-git` (or a non-interactive run) already wrote it
+    // and the directory is still not a git repo — exactly what the
+    // checklist's copyable skills command produces.
+    await runInit(d, { skills: false, git: false });
+    expect(existsSync(join(d, '.git'))).toBe(false);
+
+    await runInit(d, { skills: false });
+
+    expect(existsSync(join(d, '.git'))).toBe(true);
+    // HEAD must resolve — an unborn HEAD (git init with zero commits) makes
+    // snapshot.head null downstream, which the agent snapshot/diff/revert
+    // safety net treats as "unrevertable".
+    expect(() => git(d, ['rev-parse', 'HEAD'])).not.toThrow();
+    expect(git(d, ['rev-list', '--count', 'HEAD'])).toBe('1');
+    expect(git(d, ['log', '--oneline'])).toContain('chore: emberflow init (anchor)');
+  });
+
+  it('folds repo-scope skill files into the same init commit as the rest of the scaffold', async () => {
+    const d = scratch();
+    await runInit(d, { skills: { scope: 'repo', home: join(d, '.home-unused') } });
+
+    const tracked = git(d, ['ls-tree', '-r', 'HEAD', '--name-only']).split('\n');
+    expect(tracked).toContain('emberflow.config.mjs');
+    expect(tracked).toContain('.claude/skills/emberflow-basics/SKILL.md');
   });
 });
 

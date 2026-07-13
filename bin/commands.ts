@@ -14,6 +14,7 @@ export interface ParsedArgs {
   noSkills?: boolean;
   scope?: 'global' | 'repo';
   noLaunch?: boolean;
+  noGit?: boolean;
   mock?: boolean;
   js?: boolean;
   ts?: boolean;
@@ -42,6 +43,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     else if (a === '--global') out.scope = 'global';
     else if (a === '--local') out.scope = 'repo';
     else if (a === '--no-launch') out.noLaunch = true;
+    else if (a === '--no-git') out.noGit = true;
     else if (a === '--mock') out.mock = true;
     else if (a === '--js') out.js = true;
     else if (a === '--ts') out.ts = true;
@@ -243,17 +245,19 @@ export async function runCommand(p: ParsedArgs, ctx: RuntimeContext = defaultCtx
               skills?: false | { scope: 'repo' | 'global'; home: string };
               packageRoot?: string;
               language?: 'javascript' | 'typescript';
+              git?: boolean;
             }
           ) => Promise<number>;
           tsxResolvable: (cwd: string) => boolean;
         };
         const scope = p.scope ?? (await promptScope());
         const language = p.js ? 'javascript' : p.ts ? 'typescript' : await promptLanguage();
+        const git = !p.noGit;
         const code = await mod.runInit(
           process.cwd(),
           p.noSkills
-            ? { skills: false, packageRoot: pkgRoot, language }
-            : { skills: { scope, home: homedir() }, packageRoot: pkgRoot, language }
+            ? { skills: false, packageRoot: pkgRoot, language, git }
+            : { skills: { scope, home: homedir() }, packageRoot: pkgRoot, language, git }
         );
         if (code !== 0) return code;
 
@@ -297,7 +301,7 @@ export async function runCommand(p: ParsedArgs, ctx: RuntimeContext = defaultCtx
     }
     default:
       console.log(
-        'Usage: emberflow <dev|serve|mcp|init|run|test|doctor|list-nodes|node-schema|list-workflows|get-workflow|list-environments|login-environment|set-environment-auth|serving|validate|publish|save|create|delete|rename|samples> [--port N] [--project DIR] [--scenario NAME] [--no-skills] [--global|--local] [--no-launch] [--mock] [--js|--ts]\n' +
+        'Usage: emberflow <dev|serve|mcp|init|run|test|doctor|list-nodes|node-schema|list-workflows|get-workflow|list-environments|login-environment|set-environment-auth|serving|validate|publish|save|create|delete|rename|samples> [--port N] [--project DIR] [--scenario NAME] [--no-skills] [--global|--local] [--no-launch] [--no-git] [--mock] [--js|--ts]\n' +
           '  test [opId] [--environment NAME] [--json]   Run scenario expectations in-process (no runner) — exit 0/1/2\n' +
           '  doctor [opId] [--fix]                       Diagnose operation(s) in-process (no runner); --fix seeds param defaults — exit 0/1/2'
       );

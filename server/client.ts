@@ -18,7 +18,7 @@ function baseUrl(): string {
 
 /** SSE-shaped events emitted on GET /runs/:id/events — mirrors server/runRegistry.ts RunEvent. */
 export type RunEvent =
-  | { type: 'nodeState'; nodeId: string; state: NodeRunState }
+  | { type: 'nodeState'; workflowId: string; nodeId: string; state: NodeRunState }
   | { type: 'log'; line: LogLine }
   | { type: 'finished'; run: WorkflowRun };
 

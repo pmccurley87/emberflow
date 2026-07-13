@@ -1,4 +1,5 @@
 import type { AgentEvent } from './types';
+import { modelRejectionHint } from './modelRejectionHint';
 
 interface CodexCommandExecutionItem {
   type: 'command_execution';
@@ -55,6 +56,24 @@ interface CodexLine {
   type: string;
   item?: CodexItem;
   usage?: Record<string, number>;
+  message?: string;
+  error?: { message?: string };
+}
+
+/**
+ * Codex wraps API failures as JSON-in-a-string: `turn.failed`'s error.message
+ * (and top-level `error`'s message) is often itself a serialized
+ * `{"type":"error","status":400,"error":{"message":"…"}}` payload. Dig out the
+ * innermost human-readable message, falling back to the raw string.
+ */
+function extractCodexErrorMessage(raw: string | undefined): string {
+  if (!raw) return 'codex turn failed';
+  try {
+    const inner = JSON.parse(raw) as { error?: { message?: string }; message?: string };
+    return inner.error?.message ?? inner.message ?? raw;
+  } catch {
+    return raw;
+  }
 }
 
 export function parseCodexLine(line: string): AgentEvent | null {
@@ -119,6 +138,21 @@ export function parseCodexLine(line: string): AgentEvent | null {
 
     case 'turn.completed':
       return { type: 'done', usage: parsed.usage };
+
+    // The turn itself failed (e.g. the API rejected the request) — this IS the
+    // run failing, unlike an `error` ITEM above. Codex exits 1 after emitting
+    // it; without handling it here the adapter can only synthesize a generic
+    // "codex exited with code 1" and the real cause stays buried.
+    case 'turn.failed': {
+      const text = extractCodexErrorMessage(parsed.error?.message);
+      const hint = modelRejectionHint('codex', text);
+      return { type: 'error', text: hint ? `${text} (${hint})` : text };
+    }
+
+    // Top-level `error` lines precede turn.failed with the same payload —
+    // surface as a visible diagnostic, let turn.failed be the terminal event.
+    case 'error':
+      return { type: 'message', text: `⚠ ${extractCodexErrorMessage(parsed.message)}` };
 
     default:
       return null;

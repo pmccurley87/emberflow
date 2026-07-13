@@ -2,7 +2,7 @@
 name: emberflow-review-workflow
 description: Use to code-review an Emberflow API operation before it ships — after authoring or modeling one, or when asked to check/audit/review an existing operation. A rubric covering HTTP trigger + auth, wiring integrity, branch coverage, effects/safe-mode correctness, determinism, and readability. Reports findings by severity; does not rubber-stamp.
 metadata:
-  version: 2.2.0
+  version: 2.3.0
 ---
 
 # Reviewing an Emberflow operation
@@ -128,12 +128,48 @@ serving, mocks for mock mode. Check both halves.
 - **Layout reads left-to-right, no overlaps** (auto-layout in the studio). Minor,
   but a jumbled graph hides wiring bugs.
 
+### Domain read-through (for modeled processes)
+
+When an operation claims to model an existing process or serve as executable
+documentation, read the source process and identify its audience before
+approving it. The canvas itself must read as:
+
+`trigger → reader-relevant actions/decisions → explained outcome`
+
+- **Domain decisions are visible.** Decisions needed to explain the result
+  appear as domain-named nodes and `Conditional`/`Route` branches. Existing formulas
+  may remain in source functions called by those nodes; do not require copied
+  logic merely to make it visible.
+- **Intermediate conclusions are inspectable.** Outputs carry the facts,
+  calculation basis, outcome, and provenance the named audience needs to
+  explain why the process reached its result.
+- **The graph is not a generic bridge.** `Input → RunWholeStage → Result` is
+  Important when `RunWholeStage` hides several reader-relevant actions or
+  decisions. Report `process-logic-opaque` and name the hidden decisions.
+- **The graph is not source/task decomposition.** Files, classes, helper
+  functions, source-code phases, implementation-plan tasks, and test seams do
+  not justify separate operations. Fragmentation that replaces the domain
+  read-through with technical stage names is Important.
+- **Real process boundaries remain real.** Independently triggered HTTP,
+  queue, and cron handlers and durable hand-offs remain separate operations;
+  collapsing one into a synchronous `Subflow` is Critical when it changes
+  lifecycle, retry, or delivery semantics.
+
+A typed proxy to a genuinely opaque external service is not required to expose
+that service's unavailable internals. It must be described as a proxy or opaque
+step, not as executable documentation of the external process.
+
 ## 7. Fidelity (for modeled processes)
 
 If the flow models existing code (see emberflow-model-process): spot-check the
 ported constants/thresholds/branch-order against the source. A silently "cleaned
 up" constant or dropped branch is a Critical fidelity break. Documented
 `PORT NOTE:` divergences are fine; undocumented ones are findings.
+
+Also compare operation and `Subflow` boundaries with the source's real trigger,
+durability, retry, and lifecycle boundaries. Matching function/file structure
+is not fidelity; preserving behaviour while making its domain explanation
+visible is.
 
 ## Output format
 

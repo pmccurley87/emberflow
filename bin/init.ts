@@ -1,7 +1,8 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, copyFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { detectHarnesses, resolveSkillDirs } from './skillTargets';
 
@@ -148,6 +149,87 @@ function writeFileIfAbsent(path: string, content: string, log: string[]): void {
   log.push(path);
 }
 
+/** Same notion as server/agents/gitScope.ts's isGitRepo: is `cwd` inside a git
+ *  work tree? A plain rev-parse probe — we only need the yes/no. */
+function isInsideGitRepo(cwd: string): boolean {
+  try {
+    return (
+      execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim() === 'true'
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Every agent feature is gated on git: AgentRunManager snapshots the tree with
+ * git so changes can be reviewed and reverted (server/agents/runManager.ts).
+ * Nothing else creates the repo, so a freshly-`init`ed folder that isn't already
+ * inside a repo gets one here, with an initial commit of ONLY the files init
+ * scaffolded — never `git add -A`, since a fresh dir may already hold the user's
+ * own uncommitted app code.
+ *
+ * The initial commit is load-bearing, not cosmetic: gitScope restores tracked
+ * files by checking them out of the snapshot commit, and an unborn HEAD (a repo
+ * with zero commits) leaves `snapshot.head` null — so agent edits to any
+ * pre-existing tracked file could not be reverted. The commit gives the safety
+ * net something to diff/revert against.
+ *
+ * Never nests a repo or commits when already inside one. Returns a one-line
+ * human summary of what happened, or null when nothing was done.
+ */
+function initGitRepo(cwd: string, scaffolded: string[]): string | null {
+  if (isInsideGitRepo(cwd)) return null; // pre-existing repo — never nest, never commit
+
+  const git = (args: string[]): void => {
+    execFileSync('git', args, { cwd, stdio: ['ignore', 'ignore', 'pipe'] });
+  };
+
+  git(['init']);
+
+  // Commit ONLY init's own scaffold, by explicit relative path — not `-A`.
+  const paths = [
+    ...new Set(
+      scaffolded
+        .map((p) => relative(cwd, p.replace(/\/+$/, '')))
+        .filter((p) => p.length > 0 && existsSync(join(cwd, p))),
+    ),
+  ];
+  if (paths.length === 0) {
+    // No scaffolded files to commit — most likely a re-run of init on a
+    // directory it already scaffolded (e.g. the checklist's copyable skills
+    // command, run non-interactively, against an existing project). `git init`
+    // alone leaves HEAD unborn, which breaks the agent snapshot safety net
+    // (gitScope reads snapshot.head as null and treats all later edits as
+    // unrevertable) while the git checklist row reports green. An empty anchor
+    // commit gives HEAD a real target with zero files tracked.
+    const commitEmpty = (extra: string[]): void =>
+      git([...extra, 'commit', '--allow-empty', '-m', 'chore: emberflow init (anchor)']);
+    try {
+      commitEmpty([]);
+    } catch {
+      commitEmpty(['-c', 'user.name=Emberflow', '-c', 'user.email=emberflow@localhost']);
+    }
+    return 'initialized a git repository with an empty anchor commit (no scaffolded files to commit)';
+  }
+
+  git(['add', '--', ...paths]);
+  const commit = (extra: string[]): void => git([...extra, 'commit', '-m', 'chore: emberflow init']);
+  try {
+    commit([]);
+  } catch {
+    // No user.name/user.email configured (fresh machine, CI) — the commit is
+    // load-bearing for the agent snapshot safety net, so fall back to a one-off
+    // identity for THIS commit only rather than fail init.
+    commit(['-c', 'user.name=Emberflow', '-c', 'user.email=emberflow@localhost']);
+  }
+  return 'initialized a git repository and committed the scaffold (chore: emberflow init)';
+}
+
 export async function runInit(
   cwd: string,
   opts?: {
@@ -159,6 +241,10 @@ export async function runInit(
     /** Which language to scaffold the config/nodes in. Defaults to javascript
      *  (matches the non-TTY prompt default in bin/commands.ts). */
     language?: 'javascript' | 'typescript';
+    /** Create a git repo + initial commit when the target isn't already inside
+     *  one (agent features need it — see initGitRepo). Defaults to true; the
+     *  `--no-git` flag threads through as false. */
+    git?: boolean;
   }
 ): Promise<number> {
   const written: string[] = [];
@@ -265,6 +351,10 @@ export async function runInit(
     console.log(`[emberflow] created ${path}`);
   }
 
+  // Skills are copied BEFORE the git init/commit below so repo-scope skill
+  // files (e.g. .claude/skills/emberflow-basics/SKILL.md) land in the same
+  // scaffold commit instead of being left untracked.
+  let skillsWritten: string[] = [];
   const skillsOpt = opts?.skills === undefined ? { scope: 'repo' as const, home: homedir() } : opts.skills;
   if (skillsOpt !== false) {
     const pkgRoot = opts?.packageRoot ?? join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -272,7 +362,6 @@ export async function runInit(
     if (existsSync(skillsSrc)) {
       const presence = detectHarnesses(cwd, skillsOpt.home);
       const skillDirs = resolveSkillDirs(presence, skillsOpt.scope, cwd, skillsOpt.home);
-      const skillsWritten: string[] = [];
       for (const dir of skillDirs) {
         copySkillsRecursive(skillsSrc, dir, skillsWritten);
       }
@@ -291,6 +380,23 @@ export async function runInit(
       "  - Other agents: add it to your agent's MCP server config (name/location varies by tool)."
     );
     console.log(JSON.stringify(MCP_SNIPPET, null, 2));
+  }
+
+  // Agent features (snapshot/diff/revert) require git — create the repo + an
+  // initial commit of just the scaffold unless the user opted out or is already
+  // inside a repo. Best-effort: a git failure must never fail `init` itself.
+  if (opts?.git !== false) {
+    try {
+      // A `--global` skills install writes into the user's homedir, not the
+      // project — only fold in skill paths that actually live under cwd.
+      const repoScopeSkills = skillsWritten.filter((p) => !relative(cwd, p).startsWith('..'));
+      const summary = initGitRepo(cwd, [...written, ...repoScopeSkills]);
+      if (summary) console.log(`[emberflow] ${summary}`);
+    } catch (err) {
+      console.warn(
+        `[emberflow] could not initialize git (agent features need a repo — run \`git init && git add -A && git commit -m "initial"\`): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   return 0;

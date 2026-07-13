@@ -5,11 +5,13 @@ import type {
 import { InMemoryTraceSink, startRun, type FlowRun, type NodeRegistry } from '../src/engine';
 import { createDefaultRegistry } from '../src/nodes';
 import { redactSecrets } from './redact';
-import { makeSubflowRunner } from './subflowRunner';
+import { makeSubflowRunner, type DrillEntry, type DrillState } from './subflowRunner';
 
 /** SSE-shaped events, mirroring ExecutorEvents 1:1. */
 export type RunEvent =
-  | { type: 'nodeState'; nodeId: string; state: NodeRunState }
+  /** `workflowId` is the flow the node belongs to: the root flow for the
+   *  run's own nodes, the CHILD flow's id for a stepped subflow's nodes. */
+  | { type: 'nodeState'; workflowId: string; nodeId: string; state: NodeRunState }
   | { type: 'log'; line: LogLine }
   | {
       type: 'finished';
@@ -27,6 +29,25 @@ interface LiveRun {
   listeners: Set<Listener>;
   finished: boolean;
   cleanupTimer?: ReturnType<typeof setTimeout>;
+  /** Serializes step() calls per run: a second concurrent step() would
+   *  re-arm `state.onChildStarted` (last writer wins) and double-drive the
+   *  executor, hanging the first caller. */
+  stepChain?: Promise<unknown>;
+  /** Present only for stepped runs: subflow drill-in state (see step()). */
+  drill?: {
+    state: DrillState;
+    /** The ROOT executor's step() promise left pending while a child runs. */
+    rootPendingStep?: Promise<boolean>;
+  };
+}
+
+/** Result of one composite step on a stepped run (see RunRegistry.step). */
+export interface StepResult {
+  done: boolean;
+  /** Set when this step drove execution INTO a subflow child. */
+  entered?: { workflowId: string; nodeId: string };
+  /** Set when this step completed the deepest child and popped back out. */
+  exited?: true;
 }
 
 const RETAIN_FINISHED_MS = 10 * 60 * 1000; // 10 minutes
@@ -93,6 +114,10 @@ export class RunRegistry {
        *  error-handler run — stamped onto this run's `finished` event as
        *  `errorHandler: { firedBy }`. Only meaningful alongside isErrorHandler. */
       errorHandlerFiredBy?: string;
+      /** When true (a step-mode run), Subflow children become step-drivable:
+       *  entering one pauses inside it instead of running it to completion in
+       *  a single opaque step. Drive the run via `step(runId)`. */
+      stepped?: boolean;
     },
   ): { runId: string; handle: FlowRun } {
     this.evictIfNeeded();
@@ -116,6 +141,11 @@ export class RunRegistry {
     // the child via loadFlow, runs it to completion on the same registry
     // sharing the parent's environment, and forwards its (prefixed) logs into
     // this run's SSE stream via `onLog`.
+    // Stepped runs share ONE drill state across the root's runner and every
+    // nested child's runner (makeSubflowRunner threads `opts` through), so a
+    // grandchild pushes onto the same stack and nesting works.
+    const drillState: DrillState | undefined = opts.stepped ? { stack: [] } : undefined;
+
     const subflowRunner = makeSubflowRunner(
       {
         loadFlow: (id) => this.loadFlow?.(id),
@@ -127,6 +157,18 @@ export class RunRegistry {
         mockRun: opts.mockRun,
         trace: this.sink,
         onLog: (line) => emit({ type: 'log', line }),
+        drill: drillState,
+        // Stepped children stream node states into this run's SSE stream,
+        // tagged with the CHILD flow's id so the client can route them.
+        // After a drill-aware cancel the rejected parent executions unwind in
+        // the background (recording their Subflow nodes as failed) — child
+        // states from that unwinding must not reach subscribers post-finish.
+        onNodeState: drillState
+          ? (workflowId, nodeId, state) => {
+              if (drillState.cancelled) return;
+              emit({ type: 'nodeState', workflowId, nodeId, state });
+            }
+          : undefined,
       },
       [flow.id],
     );
@@ -145,9 +187,14 @@ export class RunRegistry {
       trace: this.sink,
       subflowRunner,
       events: {
-        onNodeStateChange: (nodeId, state) => emit({ type: 'nodeState', nodeId, state }),
+        onNodeStateChange: (nodeId, state) =>
+          emit({ type: 'nodeState', workflowId: flow.id, nodeId, state }),
         onLog: (line) => emit({ type: 'log', line }),
         onRunFinished: (run) => {
+          // Idempotent: after a drill-aware cancel the root executor's pending
+          // Subflow execution can fail in the background and re-finish the run
+          // — subscribers already saw the cancelled `finished` event.
+          if (entry.finished) return;
           emit({
             type: 'finished',
             run,
@@ -163,8 +210,158 @@ export class RunRegistry {
     });
 
     entry.handle = handle;
+    if (drillState) entry.drill = { state: drillState };
     this.runs.set(handle.run.id, entry);
     return { runId: handle.run.id, handle };
+  }
+
+  /**
+   * One composite step of a run, drill-aware. For stepped runs a Subflow node
+   * is no longer one opaque step: entering it pauses inside the child
+   * (`entered`), subsequent steps drive the child's nodes, and completing the
+   * child pops back out (`exited`). Non-stepped runs (no drill state) fall
+   * back to a plain executor step. Unknown run → undefined.
+   */
+  async step(runId: string): Promise<StepResult | undefined> {
+    const entry = this.runs.get(runId);
+    if (!entry) return undefined;
+    // Serialize per run: concurrent step() calls would each arm
+    // `state.onChildStarted` (last writer wins) and double-drive the
+    // executor, so the second caller waits for the first to settle.
+    const result = (entry.stepChain ?? Promise.resolve()).then(() => this.stepLevels(entry));
+    entry.stepChain = result.catch(() => undefined);
+    return result;
+  }
+
+  /**
+   * One composite step, drill-aware. Structured as a loop over levels: each
+   * pass drives the current deepest level (a pending stashed step, or a fresh
+   * executor step) while racing "a new child started". Popping a finished
+   * child continues the loop on its parent's stashed step WITH the race still
+   * armed — the parent's still-pending Subflow node execution may call
+   * runSubflow again (retry, or a custom node making sequential calls), and
+   * that re-entry must surface as `entered`, not deadlock the fold.
+   */
+  private async stepLevels(entry: LiveRun): Promise<StepResult> {
+    const drill = entry.drill;
+    if (!drill) {
+      const more = await entry.handle.step();
+      return { done: !more };
+    }
+
+    const { state } = drill;
+    // Cancelled mid-drill: the stack was already unwound by cancel(); report
+    // done without driving anything.
+    if (state.cancelled) return { done: true };
+
+    // Set once this step pops a child; carried onto whatever this step
+    // ultimately reports (including an `entered` for a re-run child).
+    let exited = false;
+    const withExit = (r: StepResult): StepResult => (exited ? { ...r, exited: true } : r);
+
+    for (;;) {
+      // The level being stepped: the deepest drilled-in child, or the root run.
+      const level = state.stack.length > 0 ? state.stack[state.stack.length - 1] : undefined;
+      const handle = level ? level.handle : entry.handle;
+      const pendingStep = level ? level.pendingStep : drill.rootPendingStep;
+      const setPending = (p: Promise<boolean> | undefined): void => {
+        if (level) level.pendingStep = p;
+        else drill.rootPendingStep = p;
+      };
+
+      // A Subflow node's execution blocks inside runSubflow until its child
+      // completes, so the step promise alone can never report "entered a
+      // child" — arm the child-started signal BEFORE awaiting and race them.
+      const childStarted = new Promise<DrillEntry>((res) => {
+        state.onChildStarted = res;
+      });
+      const stepPromise = pendingStep ?? handle.step();
+      setPending(undefined);
+
+      type Raced = { kind: 'stepped'; more: boolean } | { kind: 'entered'; child: DrillEntry };
+      let raced: Raced;
+      try {
+        raced = await Promise.race([
+          stepPromise.then((more): Raced => ({ kind: 'stepped', more })),
+          childStarted.then((child): Raced => ({ kind: 'entered', child })),
+        ]);
+      } catch (err) {
+        state.onChildStarted = undefined;
+        if (!level) throw err;
+        // A child level's step threw outright (not a recorded node failure —
+        // the executor catches those). Reject the parent's blocked runSubflow,
+        // which surfaces it as the Subflow node's error, then fold the parent
+        // (next loop pass, race re-armed).
+        state.stack.pop();
+        level.reject(err);
+        exited = true;
+        continue;
+      }
+      state.onChildStarted = undefined;
+
+      if (raced.kind === 'entered') {
+        // The level's step stays pending for the whole child run — stash it;
+        // the step that later pops this child folds its boolean back in.
+        setPending(stepPromise);
+        return withExit({
+          done: false,
+          entered: { workflowId: raced.child.workflowId, nodeId: raced.child.viaNodeId },
+        });
+      }
+
+      if (raced.more) return withExit({ done: false });
+
+      // This level has no more nodes: its run is complete.
+      if (!level) return withExit({ done: true });
+
+      // Pop the finished child and hand its completed run (succeeded OR failed)
+      // to the parent's blocked runSubflow — the success/failure semantics live
+      // in subflowRunner, byte-identical to the non-stepped path. The parent's
+      // stashed step is folded in by the next loop pass, with the child-started
+      // race re-armed so a retrying Subflow node re-entering its child yields
+      // `exited` + `entered` instead of hanging.
+      state.stack.pop();
+      level.resolve(level.handle.run);
+      exited = true;
+    }
+  }
+
+  /**
+   * Cancel a run, drill-aware. For a stepped run drilled into subflows this
+   * cancels every stacked child deepest-first and rejects the promise each
+   * parent's Subflow node execution is blocked on — those pending executions
+   * then unwind in the background exactly like an in-flight node after a
+   * plain root cancel today (recorded, but the run is already finished).
+   * step() after cancel reports { done: true } without executing anything.
+   * Returns false for an unknown run.
+   */
+  /** Cancels every live (non-finished) run — the server's shutdown path, so
+   *  in-flight executions (and their drilled subflow children) don't keep
+   *  running headless after the process is asked to die. */
+  shutdown(): void {
+    for (const [id, run] of this.runs) {
+      if (!run.finished) this.cancel(id);
+    }
+  }
+
+  cancel(runId: string): boolean {
+    const entry = this.runs.get(runId);
+    if (!entry) return false;
+    const drill = entry.drill;
+    if (drill) {
+      const { state } = drill;
+      state.cancelled = true;
+      state.onChildStarted = undefined;
+      while (state.stack.length > 0) {
+        const child = state.stack.pop()!;
+        child.pendingStep = undefined;
+        child.handle.cancel();
+        child.reject(new Error('run cancelled'));
+      }
+      drill.rootPendingStep = undefined;
+    }
+    entry.handle.cancel();
+    return true;
   }
 
   /**

@@ -124,6 +124,26 @@ describe('POST /agent — setup-environments route validation', () => {
   });
 });
 
+describe('POST /agent — guided-setup route validation', () => {
+  it('accepts a guided-setup intent WITHOUT flowId or environment (instruction-only, like setup-environments)', async () => {
+    const res = await postAgentWhenFree({ intent: { action: 'guided-setup', instruction: 'dev and prod please' } });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(typeof body.agentRunId).toBe('string');
+    expect(body.agentRunId.length).toBeGreaterThan(0);
+  });
+
+  it('accepts a guided-setup intent with an empty instruction (the no-notes start)', async () => {
+    const res = await postAgentWhenFree({ intent: { action: 'guided-setup', instruction: '' } });
+    expect(res.status).toBe(201);
+  });
+
+  it('400s a guided-setup intent with no instruction field', async () => {
+    const res = await postAgent({ intent: { action: 'guided-setup' } });
+    expect(res.status).toBe(400);
+  });
+});
+
 /** The run manager is single-flight per project (409 while a previous stub run
  *  winds down) — retry briefly so route-validation asserts don't race it. */
 async function postAgentWhenFree(body: unknown): Promise<Response> {

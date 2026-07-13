@@ -833,21 +833,51 @@ function RunbookItems({ items, ctx }: { items: RunbookItem[]; ctx: RunbookCtx })
   );
 }
 
+/** One clickable level of the step-drill breadcrumb (`Parent › Child`). */
+interface DrillCrumb {
+  name: string;
+  current: boolean;
+  onClick: () => void;
+}
+
 function RunbookHeader({
   name,
   environment,
   subtitle,
   expandAll,
   onToggleExpandAll,
+  crumbs,
 }: {
   name: string;
   environment?: string;
   subtitle: string;
   expandAll: boolean;
   onToggleExpandAll: () => void;
+  /** Step-drill trail, root first — rendered above the title while a stepped
+   *  run is inside a subflow. Ancestor clicks are a view-only peek. */
+  crumbs?: DrillCrumb[];
 }) {
   return (
     <div className="mb-6">
+      {crumbs && crumbs.length > 1 && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+          {crumbs.map((crumb, i) => (
+            <span key={i} className="flex items-center gap-1">
+              {i > 0 && <span className="text-muted-foreground/50">›</span>}
+              <button
+                type="button"
+                onClick={crumb.onClick}
+                className={cn(
+                  'cursor-pointer transition-colors hover:text-foreground',
+                  crumb.current && 'font-medium text-foreground',
+                )}
+              >
+                {crumb.name}
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <h1 className="text-[22px] font-bold tracking-tight">{name}</h1>
       <div className="mt-1.5 flex items-center gap-2 text-[12px] text-muted-foreground">
         {environment && (
@@ -944,19 +974,36 @@ function BuildingHolding({ route }: { route?: string }) {
 }
 
 export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'technical' } = {}) {
-  const flow = useBuilderStore((s) => s.flow);
+  const liveFlow = useBuilderStore((s) => s.flow);
   const registry = useBuilderStore((s) => s.registry);
   const buildingOperationId = useBuilderStore((s) => s.buildingOperationId);
-  const run = useBuilderStore((s) => s.run);
+  const liveRun = useBuilderStore((s) => s.run);
   const logs = useBuilderStore((s) => s.logs);
   const runHistory = useBuilderStore((s) => s.runHistory);
-  const selectedNodeId = useBuilderStore((s) => s.selectedNodeId);
+  const storeSelectedNodeId = useBuilderStore((s) => s.selectedNodeId);
   const selectNode = useBuilderStore((s) => s.selectNode);
+  const stepDrill = useBuilderStore((s) => s.stepDrill);
+  const drillPeek = useBuilderStore((s) => s.drillPeek);
+  const peekDrill = useBuilderStore((s) => s.peekDrill);
+
+  // While a stepped run is drilled into a subflow, an ancestor crumb click is
+  // a view-only PEEK: render that stashed level's flow/run without popping the
+  // drill stack or touching the server. The store's flow/run stay the deepest
+  // (live) level — child SSE states keep landing there during the peek.
+  const peeking = drillPeek !== null && drillPeek < stepDrill.length;
+  const flow = peeking ? stepDrill[drillPeek].savedFlow : liveFlow;
+  const run = peeking ? stepDrill[drillPeek].savedRun : liveRun;
+  // Peeked levels are read-only: selection stays with the live level.
+  const selectedNodeId = peeking ? null : storeSelectedNodeId;
 
   const doc = useMemo(() => buildRunbook(flow, registry), [flow, registry]);
+  // A drilled-in CHILD view (the live deepest level, or a peeked mid-level —
+  // peek index 0 is the root) matches log lines by caller-prefixed suffix
+  // too, since child log nodeIds arrive as `${callerNodeId}/${childNodeId}`.
+  const drilled = peeking ? drillPeek! > 0 : stepDrill.length > 0;
   const projection = useMemo(
-    () => projectRunbook(doc, run, logs, runHistory, flow.id),
-    [doc, run, logs, runHistory],
+    () => projectRunbook(doc, run, logs, runHistory, flow.id, drilled),
+    [doc, run, logs, runHistory, flow.id, drilled],
   );
 
   // Paced reveal: the document fills at a readable rhythm even when the engine
@@ -1051,7 +1098,8 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
     run,
     resetKey: `${flow.id}:${run?.id ?? 'none'}`,
     selectedNodeId,
-    selectNode,
+    // A peeked level is read-only — row clicks must not move the live selection.
+    selectNode: peeking ? () => {} : selectNode,
     registerRow,
     register,
     displayStatus,
@@ -1060,6 +1108,21 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
   };
   const subtitle = flow.folder ?? `${flow.nodes.length} step${flow.nodes.length === 1 ? '' : 's'}`;
   const building = buildingOperationId === flow.id;
+
+  // Step-drill breadcrumb: ancestors from the stashed levels (root first),
+  // then the deepest (live) flow. Ancestor clicks peek; the last crumb
+  // returns to the live level.
+  const crumbs: DrillCrumb[] | undefined =
+    stepDrill.length > 0
+      ? [
+          ...stepDrill.map((d, i) => ({
+            name: d.savedFlow.name,
+            current: peeking && drillPeek === i,
+            onClick: () => peekDrill(i),
+          })),
+          { name: liveFlow.name, current: !peeking, onClick: () => peekDrill(null) },
+        ]
+      : undefined;
 
   return (
     <div ref={scrollRef} className="h-full min-h-0 overflow-y-auto bg-background">
@@ -1070,6 +1133,7 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
           subtitle={subtitle}
           expandAll={expandAll}
           onToggleExpandAll={() => setExpandAll((v) => !v)}
+          crumbs={crumbs}
         />
         {building ? (
           <BuildingHolding route={flow.http ? `${flow.http.method} ${flow.http.path}` : undefined} />

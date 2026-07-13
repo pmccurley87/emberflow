@@ -40,6 +40,7 @@ export type AgentIntent =
   | { action: 'setup-auth'; environment: string; instruction: string }
   | { action: 'setup-environments'; instruction: string }
   | { action: 'scout-infrastructure'; instruction: string }
+  | { action: 'guided-setup'; instruction: string }
   | { action: 'cover-operation'; flowId: string; instruction: string }
   | { action: 'ask'; flowId?: string; instruction: string };
 
@@ -84,16 +85,27 @@ export async function startAgent(intent: AgentIntent, opts?: StartAgentOptions):
  */
 export function streamAgent(agentRunId: string, onEvent: (event: AgentEvent) => void): () => void {
   const source = new EventSource(`${BASE}/agent/${agentRunId}/events`);
+  // Set once the server delivers the run's terminal event — from then on any
+  // connection-level error (the server closing the response right after) is
+  // expected, not a lost stream, so onerror must stay quiet.
+  let sawTerminal = false;
   const types: AgentEvent['type'][] = ['started', 'message', 'command', 'mcp', 'approval-request', 'done', 'error'];
   for (const type of types) {
     source.addEventListener(type, (event) => {
-      const data = JSON.parse((event as MessageEvent).data) as AgentEvent;
+      // EventSource dispatches its CONNECTION errors as `error` events too —
+      // those carry no data, unlike the server's named `event: error` payloads.
+      const raw = (event as MessageEvent).data as string | undefined;
+      if (raw === undefined) return;
+      const data = JSON.parse(raw) as AgentEvent;
       onEvent(data);
-      if (type === 'done' || type === 'error') source.close();
+      if (type === 'done' || type === 'error') {
+        sawTerminal = true;
+        source.close();
+      }
     });
   }
   source.onerror = () => {
-    if (source.readyState === EventSource.CLOSED) {
+    if (!sawTerminal && source.readyState === EventSource.CLOSED) {
       onEvent({ type: 'error', text: 'Lost connection to the agent event stream' });
     }
   };

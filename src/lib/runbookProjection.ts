@@ -56,10 +56,24 @@ function fieldList(value: unknown, label: string): string {
   return `${label}[${shown.join(',')}]`;
 }
 
-function lastInfoOutcome(logs: LogLine[], nodeId: string): string {
+/**
+ * Whether a log line belongs to the given node. A drilled-in subflow child's
+ * log lines carry nodeIds prefixed with the caller chain
+ * (`${callerNodeId}/${childNodeId}`, nested per level — see subflowRunner),
+ * while the drilled view's runbook uses the raw child ids, so when projecting
+ * a drilled child flow a suffix match after a slash also counts. Kept behind
+ * `drilled` so an undriled parent view can never match a child's prefixed
+ * line against a same-named parent node.
+ */
+function lineIsFor(line: LogLine, nodeId: string, drilled: boolean): boolean {
+  if (line.nodeId === nodeId) return true;
+  return drilled && !!line.nodeId && line.nodeId.endsWith(`/${nodeId}`);
+}
+
+function lastInfoOutcome(logs: LogLine[], nodeId: string, drilled: boolean): string {
   for (let i = logs.length - 1; i >= 0; i--) {
     const line = logs[i];
-    if (line.nodeId === nodeId && line.level === 'info') return line.message;
+    if (lineIsFor(line, nodeId, drilled) && line.level === 'info') return line.message;
   }
   return '';
 }
@@ -72,10 +86,10 @@ function lastInfoOutcome(logs: LogLine[], nodeId: string): string {
  * iteration); null when the node has no receipt yet (never executed).
  */
 const RECEIPT_RE = /^#(\d+) ▶ execute/;
-function receiptSeq(logs: LogLine[], nodeId: string): string | null {
+function receiptSeq(logs: LogLine[], nodeId: string, drilled: boolean): string | null {
   for (let i = logs.length - 1; i >= 0; i--) {
     const line = logs[i];
-    if (line.nodeId === nodeId && line.level === 'debug') {
+    if (lineIsFor(line, nodeId, drilled) && line.level === 'debug') {
       const match = RECEIPT_RE.exec(line.message);
       if (match) return match[1];
     }
@@ -152,6 +166,9 @@ export function projectRunbook(
   logs: LogLine[],
   history: RunHistoryEntry[],
   flowId: string,
+  /** True when projecting a drilled-in subflow child view: log lines then
+   *  also match by `…/${nodeId}` suffix (child log ids are caller-prefixed). */
+  drilled = false,
 ): RunbookProjection {
   // ── steps ──
   const steps = new Map<string, StepProjection>();
@@ -160,10 +177,13 @@ export function projectRunbook(
     const status = statusOf(state);
     // A failed node's outcome line is its error, not the last info log (which
     // may be stale from a prior successful attempt or simply absent).
-    const outcome = status === 'failed' ? state?.error || lastInfoOutcome(logs, nodeId) : lastInfoOutcome(logs, nodeId);
+    const outcome =
+      status === 'failed'
+        ? state?.error || lastInfoOutcome(logs, nodeId, drilled)
+        : lastInfoOutcome(logs, nodeId, drilled);
     const durationMs = durationOf(state);
     // `#N` receipt prefix once the node has executed; bare type name before that.
-    const seq = receiptSeq(logs, nodeId);
+    const seq = receiptSeq(logs, nodeId, drilled);
     const prefix = seq ? `#${seq} ` : '';
     const ms = `${durationMs ?? 0}ms`;
     let tech: string;

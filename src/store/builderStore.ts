@@ -28,7 +28,7 @@ import {
   testWorkflow as testWorkflowOnServer,
 } from './serverRunner';
 import type {
-  EnvAuth, ErrorHandlerTag, EnvironmentSummary, ScenarioTestReport, ServerRunOptions,
+  EnvAuth, ErrorHandlerTag, EnvironmentSummary, ScenarioTestReport, ServerRunOptions, StepResult,
 } from './serverRunner';
 import { cancelAgent, fetchAgentDiff, revertAgent, startAgent, streamAgent } from './agentClient';
 import type { AgentEvent, AgentIntent, AgentKind, StartAgentOptions } from './agentClient';
@@ -61,6 +61,30 @@ function dropReport(
   return rest;
 }
 
+
+/**
+ * One level of the stepped-run drill stack: entered when a step response
+ * reports `entered` (execution moved inside a Subflow node), popped on
+ * `exited`. The parent's flow/run/selection are stashed here so the canvas
+ * can show the child while the parent keeps receiving its own SSE states
+ * (routed into `savedRun` by workflowId), and be restored intact on exit.
+ */
+export interface StepDrillEntry {
+  /** The child flow's id (the level the drill entered INTO). */
+  workflowId: string;
+  /** The PARENT's Subflow node id that execution entered through. */
+  viaNodeId: string;
+  /** The parent level's flow, restored on exit. */
+  savedFlow: WorkflowDefinition;
+  /** The parent level's run — still updated by routed nodeState events while drilled. */
+  savedRun: WorkflowRun | null;
+  savedSelectedNodeId: string | null;
+  /** True when the child flow wasn't found in the workspace: the view stayed
+   *  on the parent, but the level is still pushed so the client stack depth
+   *  mirrors the server's and the matching `exited` pops correctly. Popping a
+   *  placeholder leaves flow/run/selection untouched (they never changed). */
+  placeholder?: true;
+}
 
 /** A finished run plus builder-side context the engine doesn't track. */
 export type RunHistoryEntry = WorkflowRun & {
@@ -173,6 +197,18 @@ interface BuilderState {
   /** True while a stepped run is in progress (started via Step, not Run) — drives
    * the toolbar's step-over affordance. Cleared when the run finishes or resets. */
   stepMode: boolean;
+  /** Stepped-run subflow drill stack, deepest last. Non-empty while execution
+   *  is inside one (or more, when nested) Subflow nodes and the canvas shows
+   *  the drilled child. Empty otherwise. */
+  stepDrill: StepDrillEntry[];
+  /** View-only peek back up the drill stack: an index into `stepDrill` shows
+   *  that ancestor level's stashed flow/run in the runbook WITHOUT popping the
+   *  stack or touching the server; null shows the deepest (live) level.
+   *  Reset to null whenever execution enters or exits a subflow. */
+  drillPeek: number | null;
+  /** Peek at ancestor level `index` of the drill stack (null = back to the
+   *  deepest level). Out-of-range indexes clear the peek. */
+  peekDrill(index: number | null): void;
   sidebarOpen: boolean;
   toggleSidebar(): void;
   /** Whether the bottom dock panel is mounted (persisted). */
@@ -290,12 +326,23 @@ interface BuilderState {
     instruction?: string;
     diff?: string;
     files?: string[];
+    /** True when this run is a `guided-setup` run OWNED by the WelcomeDialog's
+     *  two-pane phase machine. It suppresses the right-hand AgentConsole
+     *  auto-open (the dialog embeds the stream itself) and, since the run lives
+     *  in this single slot, lets the dialog re-attach after being closed
+     *  mid-run — the phase derives from this flag + `status`. */
+    guided?: boolean;
   } | null;
   /** Persisted agent+model picked in Settings; used as runAgent's default opts. */
   agentChoice: AgentChoice;
   setAgentChoice(choice: AgentChoice): void;
   /** Start a coding-agent run and stream its events into `agentRun`. */
   runAgent(intent: AgentIntent, opts?: StartAgentOptions): Promise<void>;
+  /** Kick off (or continue) the WelcomeDialog's guided-setup run: one agent run
+   *  that reads state, scouts/skips, installs skills, and interviews about
+   *  environments. Marks the run `guided` so the dialog owns its stream and the
+   *  right-hand console stays closed. */
+  beginGuidedSetup(instruction?: string): void;
   /**
    * The operation currently being scaffolded by the create flow. Its stub is
    * already selected; the canvas shows a "waiting for the agent" holding pattern
@@ -557,6 +604,136 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     }));
   };
 
+  /**
+   * Execution stepped INTO a Subflow node: stash the current level and show
+   * the child flow with a fresh synthetic run (status running, no node states
+   * yet — the child's first node executes on the NEXT step and lights up as
+   * its SSE states arrive). Logs are the root run's and keep streaming; the
+   * server run id and step mode are untouched. If the child flow isn't in the
+   * workspace (shouldn't happen for project flows), stay on the parent but
+   * push a placeholder level so stack depths stay aligned with the server.
+   */
+  const enterDrill = (entered: { workflowId: string; nodeId: string }): void => {
+    const s = get();
+    const child = s.shelf.find((f) => f.id === entered.workflowId);
+    if (!child || child.id === s.flow.id) {
+      // Unknown child — keep stepping the parent view rather than crash, but
+      // still push a PLACEHOLDER level: the server's drill stack grew, and
+      // the client's must stay depth-aligned so the matching `exited` pops
+      // the right level (and deeper enters keep routing correctly).
+      hydrating(() =>
+        set({
+          stepDrill: [
+            ...s.stepDrill,
+            {
+              workflowId: entered.workflowId,
+              viaNodeId: entered.nodeId,
+              savedFlow: s.flow,
+              savedRun: s.run,
+              savedSelectedNodeId: s.selectedNodeId,
+              placeholder: true,
+            },
+          ],
+          drillPeek: null,
+        }),
+      );
+      return;
+    }
+    const runId = s.activeServerRunId ?? s.run?.id;
+    if (!runId) return;
+    // Same id as the root run: child states stream on the root run's SSE, and
+    // the visible-run guard in onNodeState keys off this id.
+    const childRun: WorkflowRun = {
+      id: runId,
+      workflowId: child.id,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      nodeStates: {},
+    };
+    // hydrating: a drill swap is a view change, not an edit — it must not
+    // trigger the autosave that a `flow` reference change normally implies.
+    hydrating(() =>
+      set({
+        stepDrill: [
+          ...s.stepDrill,
+          {
+            workflowId: child.id,
+            viaNodeId: entered.nodeId,
+            savedFlow: s.flow,
+            savedRun: s.run,
+            savedSelectedNodeId: s.selectedNodeId,
+          },
+        ],
+        drillPeek: null,
+        flow: child,
+        run: childRun,
+        selectedNodeId: null,
+      }),
+    );
+  };
+
+  /** The drilled child completed: pop one level and restore the parent's
+   *  flow/run/selection (its run kept receiving its own routed SSE states —
+   *  including the Subflow node's terminal state — while we were inside). */
+  const exitDrill = (): void => {
+    const s = get();
+    const entry = s.stepDrill[s.stepDrill.length - 1];
+    if (!entry) return;
+    if (entry.placeholder) {
+      // The view never left the parent for this level — just drop it. The
+      // live flow/run kept receiving the parent's states while "inside".
+      hydrating(() => set({ stepDrill: s.stepDrill.slice(0, -1), drillPeek: null }));
+      return;
+    }
+    hydrating(() =>
+      set({
+        stepDrill: s.stepDrill.slice(0, -1),
+        drillPeek: null,
+        flow: entry.savedFlow,
+        run: entry.savedRun,
+        selectedNodeId: entry.savedSelectedNodeId,
+      }),
+    );
+  };
+
+  /** Unwind the whole drill stack back to the root level (run finish/reset/
+   *  flow switch): restore the root's flow/run/selection and drop the stack. */
+  const drainDrill = (): void => {
+    const s = get();
+    if (s.stepDrill.length === 0) {
+      if (s.drillPeek !== null) set({ drillPeek: null });
+      return;
+    }
+    // All-placeholder stack: the view never left the root, and the live run
+    // (not the stashes) kept receiving its states — just drop the levels.
+    if (s.stepDrill.every((d) => d.placeholder)) {
+      hydrating(() => set({ stepDrill: [], drillPeek: null }));
+      return;
+    }
+    const root = s.stepDrill[0];
+    hydrating(() =>
+      set({
+        stepDrill: [],
+        drillPeek: null,
+        flow: root.savedFlow,
+        run: root.savedRun,
+        selectedNodeId: root.savedSelectedNodeId,
+      }),
+    );
+  };
+
+  /** Consume one step response: drive the drill stack from entered/exited
+   *  markers and clear the live-run id when the run is done. `exited` can
+   *  co-occur with `done` (child was the last node, or the child failed). */
+  const handleStepResult = (result: StepResult): void => {
+    // Order matters when both markers co-occur: a retrying Subflow node pops
+    // its failed child AND re-enters a fresh one in the same step — the pop
+    // must apply before the push, or the exit would pop the new level.
+    if (result.exited) exitDrill();
+    if (result.entered) enterDrill(result.entered);
+    if (result.done) set({ activeServerRunId: null });
+  };
+
   /** Start a server-side run (if none live) and wire its SSE events into the store. */
   const ensureServerRun = async (
     mode: 'run' | 'step',
@@ -583,18 +760,40 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       };
       set({ activeServerRunId: runId, run: initial, logs: [] });
       subscribeServerRun(runId, {
-        onNodeState: (nodeId, state) => {
+        onNodeState: (workflowId, nodeId, state) => {
           set((s) => {
-            if (!s.run || s.run.id !== runId) return {};
-            const follow =
-              stepFollow && (state.status === 'succeeded' || state.status === 'failed')
-                ? { selectedNodeId: nodeId }
-                : {};
-            return { run: { ...s.run, nodeStates: { ...s.run.nodeStates, [nodeId]: state } }, ...follow };
+            const followed =
+              stepFollow && (state.status === 'succeeded' || state.status === 'failed');
+            // The level whose flow is loaded owns this event (deepest drilled
+            // level, or the root when not drilled) → apply to the live run.
+            if (s.flow.id === workflowId) {
+              if (!s.run || s.run.id !== runId) return {};
+              return {
+                run: { ...s.run, nodeStates: { ...s.run.nodeStates, [nodeId]: state } },
+                ...(followed ? { selectedNodeId: nodeId } : {}),
+              };
+            }
+            // A stashed drill level owns it (e.g. the parent's Subflow node
+            // updating while we're inside the child) → apply to its stashed
+            // run so nothing is lost when that level is restored or peeked.
+            const idx = s.stepDrill.findIndex((d) => d.savedFlow.id === workflowId);
+            if (idx === -1) return {}; // unknown workflowId — ignore
+            const entry = s.stepDrill[idx];
+            if (!entry.savedRun || entry.savedRun.id !== runId) return {};
+            const savedRun = {
+              ...entry.savedRun,
+              nodeStates: { ...entry.savedRun.nodeStates, [nodeId]: state },
+            };
+            return {
+              stepDrill: s.stepDrill.map((d, i) => (i === idx ? { ...d, savedRun } : d)),
+            };
           });
         },
         onLog: (line) => set((s) => ({ logs: [...s.logs, line] })),
         onFinished: (run, errorHandler) => {
+          // The final run is the ROOT run — unwind any remaining drill levels
+          // (cancel/failure can finish a run while drilled) before showing it.
+          drainDrill();
           set({ run });
           get().recordRun(run, errorHandler);
           set({ activeServerRunId: null });
@@ -655,6 +854,14 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     workspaceSource: 'local',
     activeServerRunId: null,
     stepMode: false,
+    stepDrill: [],
+    drillPeek: null,
+    peekDrill(index) {
+      set((s) => {
+        if (index === null || s.stepDrill.length === 0) return { drillPeek: null };
+        return { drillPeek: index >= 0 && index < s.stepDrill.length ? index : null };
+      });
+    },
     environments: [],
     environmentsDefault: '',
     selectedEnvironment: initialSelectedEnvironment,
@@ -795,6 +1002,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
           logs: [],
           activeRun: null,
           selectedNodeId: null,
+          stepDrill: [],
+          drillPeek: null,
         }),
       );
     },
@@ -874,6 +1083,11 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
 
     async runAgent(intent, opts) {
       const effectiveOpts = opts ?? get().agentChoice;
+      // A guided-setup run is OWNED by the WelcomeDialog's embedded stream, so
+      // it must NOT auto-open the right-hand AgentConsole panel. The `guided`
+      // marker on the run slot drives both the suppression here and the dialog's
+      // phase machine (which re-attaches to this same slot when reopened).
+      const guided = intent.action === 'guided-setup';
       // If a build is in flight, remember the op being built + the op ids that
       // existed before the run. If the agent renames the op (the id changes),
       // syncFromRunner can't find the old id and falls back to flows[0], leaving
@@ -891,18 +1105,22 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
             id: '',
             events: [{ type: 'error', text: err instanceof Error ? err.message : String(err) }],
             status: 'error',
+            guided,
           },
           // Open the panel so the failure is visible — without this, a start
           // error (e.g. no agent CLI on PATH) lands in a closed panel and the
-          // click appears to do nothing.
-          agentPanelOpen: true,
+          // click appears to do nothing. A guided run's failure surfaces in the
+          // WelcomeDialog's own pane, so it stays closed.
+          ...(guided ? {} : { agentPanelOpen: true }),
         });
         return;
       }
 
       set({
-        agentRun: { id: agentRunId, events: [], status: 'running', instruction: intent.instruction },
-        agentPanelOpen: true,
+        agentRun: { id: agentRunId, events: [], status: 'running', instruction: intent.instruction, guided },
+        // The WelcomeDialog embeds the stream for guided runs — don't also pop
+        // the right-hand console.
+        ...(guided ? {} : { agentPanelOpen: true }),
       });
 
       // Live canvas: while the agent works, poll the runner (GET /workflows reads
@@ -1047,6 +1265,13 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       });
     },
 
+    beginGuidedSetup(instruction) {
+      // onClick handlers leak a MouseEvent as the first arg — only a real string
+      // is a continuation answer; anything else means "start with no notes".
+      const notes = typeof instruction === 'string' ? instruction.trim() : '';
+      void get().runAgent({ action: 'guided-setup', instruction: notes });
+    },
+
     setWelcomeOpen(open) {
       set({ welcomeOpen: open });
     },
@@ -1157,6 +1382,9 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     },
 
     switchWorkflow(id) {
+      // Switching flows while drilled would strand the stashed parent — put
+      // the root level back first so flow/shelf are consistent again.
+      drainDrill();
       let switched = false;
       set((s) => {
         if (s.flow.id === id) return {};
@@ -1492,8 +1720,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       const runId = await ensureServerRun('step', scenario.input, scenario.name);
       if (runId) {
         try {
-          const done = await stepServerRun(runId);
-          if (done) set({ activeServerRunId: null });
+          handleStepResult(await stepServerRun(runId));
         } catch (err) {
           reportRunError(err instanceof Error ? err.message : String(err));
         }
@@ -1550,8 +1777,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       const runId = await ensureServerRun('step');
       if (runId) {
         try {
-          const done = await stepServerRun(runId);
-          if (done) set({ activeServerRunId: null });
+          handleStepResult(await stepServerRun(runId));
         } catch (err) {
           reportRunError(err instanceof Error ? err.message : String(err));
         }
@@ -1565,10 +1791,15 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       const existing = get().activeServerRunId;
       if (existing) {
         // A stepped run is already live on the runner — walk it to the end.
+        // Drill markers still apply (entered/exited keep the view balanced;
+        // handleStepResult clears activeServerRunId on done).
         try {
           let done = false;
-          while (!done) done = await stepServerRun(existing);
-          set({ activeServerRunId: null });
+          while (!done) {
+            const result = await stepServerRun(existing);
+            handleStepResult(result);
+            done = result.done;
+          }
         } catch (err) {
           reportRunError(err instanceof Error ? err.message : String(err));
         }
@@ -1578,6 +1809,9 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     },
 
     resetRun() {
+      // Unwind any subflow drill first so the root flow is back on the canvas
+      // before the run state clears.
+      drainDrill();
       get().activeRun?.cancel();
       const serverRunId = get().activeServerRunId;
       if (serverRunId) void cancelServerRun(serverRunId);

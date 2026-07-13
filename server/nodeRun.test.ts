@@ -10,7 +10,7 @@ import { join } from 'node:path';
 // project dir, mirroring runsAuth.test.ts / apiMount.test.ts.
 
 let proc: ChildProcess;
-const PORT = 8131;
+const PORT = 8155;
 const base = `http://127.0.0.1:${PORT}`;
 let projectDir: string;
 

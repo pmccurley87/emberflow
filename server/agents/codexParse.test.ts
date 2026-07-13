@@ -55,4 +55,41 @@ describe('parseCodexLine', () => {
     expect(parseCodexLine('')).toBeNull();
     expect(parseCodexLine('not json')).toBeNull();
   });
+
+  // Captured live from codex 0.142.5 rejecting the default model: the failure
+  // arrives as a top-level `error` line + a terminal `turn.failed`, both with
+  // the human-readable cause double-encoded as JSON-in-a-string. Unhandled,
+  // the adapter could only report a generic "codex exited with code 1".
+  const REJECTION =
+    '{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The \'gpt-5.6-sol\' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."}}';
+
+  it('maps turn.failed to a terminal error with the inner message unwrapped and the stale-CLI hint', () => {
+    const line = JSON.stringify({ type: 'turn.failed', error: { message: REJECTION } });
+    const event = parseCodexLine(line);
+    expect(event?.type).toBe('error');
+    const text = (event as { text: string }).text;
+    expect(text).toContain("The 'gpt-5.6-sol' model requires a newer version of Codex");
+    expect(text).toContain('hint: your codex CLI may be too old');
+  });
+
+  it('maps a top-level error line to a non-terminal ⚠ message with the inner message unwrapped', () => {
+    const line = JSON.stringify({ type: 'error', message: REJECTION });
+    const event = parseCodexLine(line);
+    expect(event?.type).toBe('message');
+    expect((event as { text: string }).text).toContain(
+      "⚠ The 'gpt-5.6-sol' model requires a newer version of Codex",
+    );
+  });
+
+  it('turn.failed with a plain (non-JSON) message passes it through verbatim', () => {
+    const line = JSON.stringify({ type: 'turn.failed', error: { message: 'boom' } });
+    expect(parseCodexLine(line)).toEqual({ type: 'error', text: 'boom' });
+  });
+
+  it('turn.failed with no error payload still terminates with a generic message', () => {
+    expect(parseCodexLine('{"type":"turn.failed"}')).toEqual({
+      type: 'error',
+      text: 'codex turn failed',
+    });
+  });
 });

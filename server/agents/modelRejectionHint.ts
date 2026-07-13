@@ -1,6 +1,7 @@
 import type { AgentKind } from './types';
 
-const MODEL_REJECTION_RE = /unknown model|unsupported model|invalid model|model.*not.*(found|supported)/i;
+const MODEL_REJECTION_RE =
+  /unknown model|unsupported model|invalid model|model.*not.*(found|supported)|model requires a newer version/i;
 
 /**
  * When an agent CLI exits nonzero without ever emitting a terminal `done`,

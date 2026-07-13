@@ -78,6 +78,9 @@ describe('GET /setup-status', () => {
     const body = await res.json();
 
     expect(Array.isArray(body.agents)).toBe(true);
+    // The temp project dir isn't inside a git repo — reported as such so the
+    // checklist can gate the agent features on it.
+    expect(body.git).toEqual({ repo: false });
     // A fresh project has no environments file → the synthesized fallback is
     // reported as unconfigured with zero real environments.
     expect(body.environments).toMatchObject({

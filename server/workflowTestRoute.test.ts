@@ -12,7 +12,7 @@ import { join } from 'node:path';
 // the harness in environmentsRoute.test.ts / runsAuth.test.ts.
 
 let proc: ChildProcess;
-const PORT = 8137;
+const PORT = 8156;
 const base = `http://127.0.0.1:${PORT}`;
 let projectDir: string;
 

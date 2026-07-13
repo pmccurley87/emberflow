@@ -4,6 +4,7 @@ import { buildPrompt, type AgentIntent, type AvailableNode } from './prompt';
 import type { InfrastructureManifest } from '../infrastructure';
 import { spawnCodex, type SpawnedAgent } from './codexAdapter';
 import { spawnClaude } from './claudeAdapter';
+import { resolveAgentBin } from './detect';
 import type { AgentEvent, AgentKind } from './types';
 import { isPathWithin } from '../pathSafety';
 
@@ -110,7 +111,10 @@ export class AgentRunManager {
       throw new AgentStartError('An agent run is already active for this project', 409);
     }
     if (!isGitRepo(this.projectDir)) {
-      throw new AgentStartError(`${this.projectDir} is not a git repository`, 400);
+      throw new AgentStartError(
+        `${this.projectDir} is not a git repository — Emberflow snapshots agent changes with git so you can review and revert them. Run: git init && git add -A && git commit -m "initial" — then retry.`,
+        400,
+      );
     }
 
     // `new-operation` creates a brand-new flow, so there's no existing
@@ -128,11 +132,13 @@ export class AgentRunManager {
     } else if (
       intent.action === 'setup-auth' ||
       intent.action === 'setup-environments' ||
-      intent.action === 'scout-infrastructure'
+      intent.action === 'scout-infrastructure' ||
+      intent.action === 'guided-setup'
     ) {
       // No flow file: setup-auth targets an environment, setup-environments the
-      // environments file, and scout-infrastructure reads the whole project and
-      // writes emberflow/infrastructure.json — none has a relPath to resolve.
+      // environments file, scout-infrastructure reads the whole project and
+      // writes emberflow/infrastructure.json, and guided-setup orchestrates all
+      // of setup across project-root files — none has a relPath to resolve.
       relPath = '';
     } else if (intent.action === 'ask') {
       // `ask`'s flowId is optional: with one, resolve the op's relPath like
@@ -172,16 +178,19 @@ export class AgentRunManager {
       this.projectLanguage,
       this.infrastructure(),
     );
+    // Env override wins (tests stub agents this way); otherwise use the NEWEST
+    // binary detection found across PATH + known install locations — a PATH
+    // shim pinned to a stale release must not shadow a newer install elsewhere.
     const adapter =
       opts.agent === 'claude'
         ? spawnClaude(prompt, this.projectDir, {
             model: opts.model,
-            bin: process.env.EMBERFLOW_CLAUDE_BIN,
+            bin: process.env.EMBERFLOW_CLAUDE_BIN ?? resolveAgentBin('claude'),
           })
         : spawnCodex(prompt, this.projectDir, {
             model: opts.model,
             reasoning: opts.reasoning ?? 'medium',
-            bin: process.env.EMBERFLOW_CODEX_BIN,
+            bin: process.env.EMBERFLOW_CODEX_BIN ?? resolveAgentBin('codex'),
           });
 
     const id = randomUUID();
@@ -264,6 +273,20 @@ export class AgentRunManager {
     if (!run) return false;
     run.adapter.cancel();
     return true;
+  }
+
+  /**
+   * Kills the active agent run's process tree, if any. Agent CLIs are spawned
+   * DETACHED (their own process group, so cancel can tree-kill their
+   * subprocesses) — which also means they survive the runner dying unless the
+   * shutdown path explicitly cancels them. An orphaned agent keeps editing the
+   * project long after the studio is gone; call this from the server's
+   * SIGINT/SIGTERM handlers.
+   */
+  shutdown(): void {
+    if (!this.activeRunId) return;
+    const run = this.runs.get(this.activeRunId);
+    run?.adapter.cancel();
   }
 
   /**
