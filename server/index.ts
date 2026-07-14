@@ -32,6 +32,7 @@ import { loadInfrastructure } from './infrastructure';
 import { configPathFor, loadProjectConfig } from './projectConfig';
 import { buildApiStore, buildRegistries, requireProjectWhenExplicit } from './projectMode';
 import { nodesPayload } from './nodesPayload';
+import { getSourceFile } from './sourceNav';
 import { openBrowser } from './openBrowser';
 import { AgentRunManager, AgentStartError } from './agents/runManager';
 import { isGitRepo } from './agents/gitScope';
@@ -159,7 +160,7 @@ const agentRuns = new AgentRunManager(
   project ? project.root : projectDir,
   apiStore.dir,
   apiStore.pathOf.bind(apiStore),
-  () => nodesPayload(validationRegistry).nodes.map(({ type, label, description }) => ({ type, label, description })),
+  () => nodesPayload(validationRegistry, project ? project.root : process.cwd()).nodes.map(({ type, label, description }) => ({ type, label, description })),
   project?.language ?? 'typescript',
   // Fresh per run: re-read emberflow/infrastructure.json so a scout that ran
   // earlier this session primes later prompts. Malformed → null (agent guesses).
@@ -253,7 +254,28 @@ api.post('/serving', (req: Request, res: Response) => {
 });
 
 api.get('/nodes', (_req, res) => {
-  res.json(nodesPayload(validationRegistry));
+  res.json(nodesPayload(validationRegistry, project ? project.root : process.cwd()));
+});
+
+// Whole-file source view + symbol table for the studio's source navigator.
+// Works in project mode AND no-project mode (root = cwd) — path guards in
+// sourceNav (isPathWithin, node_modules, secret basenames) bound what is
+// servable either way. 400s stay generic: the requested path is never echoed.
+api.get('/source-file', (req: Request, res: Response) => {
+  void (async () => {
+    const path = req.query.path;
+    if (typeof path !== 'string' || path.length === 0) {
+      res.status(400).json({ error: 'Query param path is required' });
+      return;
+    }
+    const root = project ? project.root : process.cwd();
+    const result = await getSourceFile(root, path);
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    res.json(result.payload);
+  })();
 });
 
 // Validate a flow against the runner's LIVE registry (built-ins + project

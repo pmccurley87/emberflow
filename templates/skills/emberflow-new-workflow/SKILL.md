@@ -2,7 +2,7 @@
 name: emberflow-new-workflow
 description: Use when creating a BRAND-NEW Emberflow API operation from scratch (greenfield) — the user describes a goal or endpoint they want and no existing code models it yet. Guides choosing method + path, wiring Input → logic → Response, choosing built-in vs custom nodes, and covering branches with scenarios. For porting an EXISTING system, use emberflow-model-process instead.
 metadata:
-  version: 2.5.0
+  version: 2.6.0
 ---
 
 # Building a new Emberflow operation (greenfield)
@@ -95,6 +95,13 @@ List the steps the endpoint takes, in order. Each becomes a node:
   (`'db'|'http'|'llm'`) on every node that touches infrastructure — mock mode
   uses it to know what to intercept. An unmarked infra node silently executes
   for real during mock runs.
+- **Node logic lives in ONE file.** Everything you write for a node — its
+  implementation and any helpers — goes in the module the `registry.register`
+  call sits in, helpers as named functions in that same file. The studio shows
+  that whole file as the node's source, so a reader sees the complete story in
+  one place. Never spread newly-authored node logic across multiple files.
+  Code the project ALREADY owns is the exception: import it normally (never
+  copy it) — the studio resolves imports and navigates to them.
 - **Implementations are real.** A custom node's implementation calls the actual
   dependency (the real query, the real HTTP call, the real SDK) — never canned
   data pretending to be an implementation. Canned data belongs in the scenario

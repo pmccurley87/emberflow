@@ -4,8 +4,7 @@ import { BranchRulesEditor } from './BranchRulesEditor';
 import { ExecutionPager } from './ExecutionPager';
 import { NodeRunModal } from './NodeRunModal';
 import { Json } from './Json';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { NodeCodeView } from './SourceNavigator';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -781,6 +780,8 @@ export function Inspector() {
   const outputValue = state?.output as Record<string, unknown> | undefined;
   const executions = state?.executions;
   const source = registry.has(node.type) ? (registry.getSource(node.type) ?? '') : '';
+  const sourceRef = registry.has(node.type) ? registry.getSourceRef(node.type) : undefined;
+  const builtinNode = registry.has(node.type) ? registry.isBuiltin(node.type) : false;
 
   const codeDialog = (
     <Dialog open={codeOpen} onOpenChange={setCodeOpen}>
@@ -790,30 +791,12 @@ export function Inspector() {
           <Badge variant="mono">{node.type}</Badge>
         </DialogTitle>
         <DialogDescription>{definition?.description ?? 'Node implementation'}</DialogDescription>
-        <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-background">
-          <SyntaxHighlighter
-            language="javascript"
-            style={vscDarkPlus}
-            showLineNumbers
-            customStyle={{
-              margin: 0,
-              background: 'transparent',
-              fontSize: '12.5px',
-              lineHeight: 1.6,
-              padding: '12px 2px',
-            }}
-            codeTagProps={{ style: { background: 'transparent', textShadow: 'none' } }}
-            lineNumberStyle={{
-              color: 'var(--muted-foreground)',
-              opacity: 0.35,
-              background: 'transparent',
-              minWidth: '2.75em',
-              paddingRight: '1em',
-            }}
-          >
-            {source}
-          </SyntaxHighlighter>
-        </div>
+        <NodeCodeView
+          nodeType={node.type}
+          source={source}
+          sourceRef={sourceRef}
+          builtin={builtinNode}
+        />
       </DialogContent>
     </Dialog>
   );

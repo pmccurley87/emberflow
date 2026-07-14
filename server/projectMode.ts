@@ -49,8 +49,11 @@ export function buildRegistries(project: ProjectConfig | null): {
   validation: NodeRegistry;
   execution: NodeRegistry;
 } {
-  const validation = createDefaultRegistry();
-  const execution = createDefaultRegistry();
+  // Server-side registries capture registration provenance (file:line of each
+  // register() call) so the studio can navigate to a node's real source.
+  // Browser registries never enable this — see createDefaultRegistry.
+  const validation = createDefaultRegistry(undefined, { captureSourceRefs: true });
+  const execution = createDefaultRegistry(undefined, { captureSourceRefs: true });
   if (project?.registerNodes) {
     project.registerNodes(validation);
     project.registerNodes(execution);

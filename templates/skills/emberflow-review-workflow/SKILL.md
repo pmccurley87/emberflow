@@ -2,7 +2,7 @@
 name: emberflow-review-workflow
 description: Use to code-review an Emberflow API operation before it ships — after authoring or modeling one, or when asked to check/audit/review an existing operation. A rubric covering HTTP trigger + auth, wiring integrity, branch coverage, effects/safe-mode correctness, determinism, and readability. Reports findings by severity; does not rubber-stamp.
 metadata:
-  version: 2.3.0
+  version: 2.4.0
 ---
 
 # Reviewing an Emberflow operation
@@ -107,6 +107,33 @@ serving, mocks for mock mode. Check both halves.
   are mock (canned), dry-run (`wouldSend`/`wouldWrite`), and real commit;
   missing credentials at commit time must THROW naming the secretRef, never
   succeed quietly. `doctor` reports these as `simulated-commit`.
+
+## 4c. Source inspectability
+
+A node is executable documentation only if its displayed implementation shows
+(or navigates to) the behaviour it delegates. Open each custom node's source
+in the studio and check:
+
+- **No unresolved project-owned references.** Every project function, constant
+  or class the implementation uses must resolve — either declared in the same
+  file or reachable through the studio's reference navigation (ordinary
+  imports resolve automatically). An unresolved project-owned reference that
+  hides a business decision, formula, classification, or side effect is
+  **Important** — **Critical** when the operation's documentation value
+  depends on it (a thin adapter presenting `computeX(ctx.input)` as if it
+  were the implementation, with `computeX` unreachable).
+- **Newly-authored logic lives in ONE file.** Node logic written for this
+  operation belongs in the registering module — helpers as named functions in
+  the same file. New logic scattered across multiple new files is Important:
+  it fragments the readable story without buying anything. (Imports of code
+  the project ALREADY owned are correct and expected — that's what navigation
+  is for.)
+- **Nobody inlined to appease the inspector.** Pre-existing shared code that
+  was copy-pasted into the registering file (instead of imported) is Important
+  — it forks the source of truth.
+- Runtime-generated implementations (factories) must carry an explicit
+  `sourceRef` (third argument to `register`) — a generated function with no
+  navigable source is Important.
 - **Both modes verified.** Run the scenarios in mock mode; if an environment
   exists, run the real path too. Green in only one world is an unproven
   operation — Important.

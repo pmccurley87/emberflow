@@ -12,8 +12,11 @@ function usernamePart(userId: string): string {
  * `delayMs` is injected into every implementation via `await sleep(delayMs)`
  * so tests can run with no delay by passing `0`.
  */
-export function createLoginRegistry(delayMs = 300): NodeRegistry {
-  const registry = new NodeRegistry();
+export function createLoginRegistry(
+  delayMs = 300,
+  opts?: { captureSourceRefs?: boolean },
+): NodeRegistry {
+  const registry = new NodeRegistry(opts);
 
   registry.register(
     {

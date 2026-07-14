@@ -2,7 +2,7 @@
 name: emberflow-basics
 description: Use whenever working with Emberflow in this project — running the studio, understanding the file layout, adding or editing API operations and scenarios, registering custom nodes, or using the CLI/MCP. The foundation the other emberflow-* skills build on. Trigger on "emberflow", "workflow builder", "operation", "api", "flow", "run a scenario", "emberflow dev".
 metadata:
-  version: 2.7.0
+  version: 2.8.0
 ---
 
 # Emberflow basics
@@ -100,6 +100,34 @@ export default defineConfig({
   made (a missing secretRef, no webhook configured), the commit path THROWS a
   clear error naming the missing key. Fake success is worse than failure;
   `doctor` flags simulated commit paths as `simulated-commit`.
+
+## Node source is executable documentation — keep it in ONE file
+
+The studio shows each node's implementation as source, and can navigate into
+project files the implementation imports. That works because Emberflow records
+where each node was registered and resolves ordinary ESM/TS imports. Keep it
+inspectable:
+
+- **When YOU author node logic, it lives in ONE module** — the file the
+  `registry.register(...)` call sits in. Helpers are named functions in that
+  SAME file, above or below the registrations; the studio's file view shows
+  them all together. Do NOT spread newly-authored node logic across multiple
+  files: every extra hop is a place a reader can get lost, and a file split
+  buys nothing the single-file view doesn't already give.
+- **Existing project code is different.** When a node wraps logic the project
+  already owns (a `src/pricing.ts` the app also uses), IMPORT it normally —
+  never copy or inline it. The studio resolves the import and navigates to it.
+  Ordinary relative imports and tsconfig path aliases resolve automatically;
+  you do not maintain any reference list.
+- **Never inline logic merely to satisfy the inspector.** The rule is "one
+  file for NEW node logic", not "no imports".
+- A registration whose implementation is generated at runtime (a factory, a
+  wrapper) can pass an explicit source location:
+  `registry.register(def, impl, { sourceRef: { file: 'src/factory.ts', line: 12 } })`.
+- **A thin adapter is not an implementation.** If the displayed handler just
+  calls `computeX(ctx.input)` and `computeX` can't be resolved to source, the
+  node is NOT adequately inspectable — fix the import so it resolves, or move
+  the logic into the registering file.
 
 ## Operation file shape
 

@@ -33,3 +33,4 @@ emberflow.environments.json.bak
 *.tgz
 dist-pack/
 .playwright-mcp/
+sites/

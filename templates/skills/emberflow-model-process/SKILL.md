@@ -2,7 +2,7 @@
 name: emberflow-model-process
 description: Use when modeling or MIGRATING EXISTING functionality into Emberflow — a single process (script, controller, job, runbook) as one operation, or a whole subsystem (a worker, a pipeline, a service's job handlers) as an API of operations. Emphasises verbatim porting, branch fidelity, determinism, and (at subsystem scale) decomposition and seam verification. For designing something brand-new, use emberflow-new-workflow instead.
 metadata:
-  version: 2.8.0
+  version: 2.9.0
 ---
 
 # Modeling an existing process as an Emberflow operation
@@ -149,6 +149,16 @@ underneath it:
   the relevant domain node. Promote a helper to its own visible node when it
   produces a meaningful intermediate domain result, owns an infrastructure
   or effect boundary, or needs distinct retry/inspection behaviour.
+- **Port by importing, never by copying.** A node implementation that wraps
+  existing source IMPORTS it from where it lives — the studio resolves the
+  import and navigates to the real code, so the port stays verbatim and the
+  source of truth stays single. Copying helper bodies into the registering
+  file forks them. New glue you write for the port (adapters, small
+  reshaping helpers) follows the one-file rule: it lives in the registering
+  module itself, not in new satellite files. After porting, open each node's
+  source in the studio: every project-owned reference must resolve —
+  an unresolved reference hiding ported business logic defeats the port's
+  documentation purpose (the review skill treats it as Important/Critical).
 - A coherent in-process domain process that is repeated or independently
   useful → a `Subflow` node calling a separate internal operation. Subflow
   extraction must make the domain read-through clearer. Do not mirror a

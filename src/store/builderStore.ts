@@ -994,8 +994,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       if (meta.length === 0) return;
       const registry = get().registry;
       for (const m of meta) {
-        const { source, ...definition } = m;
-        registry.registerDefinition(definition, source);
+        const { source, sourceRef, builtin, ...definition } = m;
+        registry.registerDefinition(definition, source, { sourceRef, builtin });
       }
       // Force palette/inspector consumers to re-read the registry: a new
       // top-level reference (Zustand uses Object.is) sharing the same node data.

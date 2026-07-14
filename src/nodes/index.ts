@@ -8,9 +8,16 @@ import { registerPradarNodesModule } from './pradar';
 import { registerResponseNodes } from './response';
 import { registerRequireAuthNode } from './requireAuth';
 
-/** All built-in nodes: login examples, Open-Meteo weather, anomaly-detection API, EV charging demo, HTTP Response, requireAuth. */
-export function createDefaultRegistry(delayMs?: number): NodeRegistry {
-  const registry = createLoginRegistry(delayMs);
+/**
+ * All built-in nodes: login examples, Open-Meteo weather, anomaly-detection API, EV charging demo, HTTP Response, requireAuth.
+ * `opts.captureSourceRefs` is threaded from SERVER callers only (buildRegistries)
+ * — this function is shared with the browser bundle, where capture stays off.
+ */
+export function createDefaultRegistry(
+  delayMs?: number,
+  opts?: { captureSourceRefs?: boolean },
+): NodeRegistry {
+  const registry = createLoginRegistry(delayMs, opts);
   registerWeatherNodes(registry);
   registerAnomalyNodes(registry);
   registerFlowControlNodes(registry);

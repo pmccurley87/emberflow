@@ -1,7 +1,15 @@
 import type { NodeDefinition } from '../engine';
 
-/** A runner node definition plus its implementation source (for display). */
-export type NodeMeta = NodeDefinition & { source?: string };
+/**
+ * A runner node definition plus its implementation source (for display) and
+ * provenance: `sourceRef` (repo-relative registering file + line) when the
+ * node is project-owned, `builtin: true` when registered from the package.
+ */
+export type NodeMeta = NodeDefinition & {
+  source?: string;
+  sourceRef?: { file: string; line?: number };
+  builtin?: boolean;
+};
 
 /**
  * Fetch the runner's node metadata (GET /api/nodes, same-origin via the
