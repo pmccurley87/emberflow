@@ -64,11 +64,18 @@ export async function fetchAvailableAgents(): Promise<DetectedAgent[]> {
 
 /** POST /agent — start an agent run, returns its id. */
 export async function startAgent(intent: AgentIntent, opts?: StartAgentOptions): Promise<string> {
-  const response = await fetch(`${BASE}/agent`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ intent, ...opts }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${BASE}/agent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ intent, ...opts }),
+    });
+  } catch {
+    // fetch rejects with a bare "Failed to fetch" on network errors — say what
+    // that actually means here and what to do about it.
+    throw new Error('Could not reach the runner — check it is still running, then try again.');
+  }
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `Failed to start agent (HTTP ${response.status})`);

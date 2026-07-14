@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FolderIcon, SparklesIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -6,7 +6,11 @@ import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from '@
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { useBuilderStore } from '../store/builderStore';
+import type { CreateModalState } from '../store/builderStore';
+import { buildApiTree, flattenLocations } from '../store/apiTree';
 import { cn } from '@/lib/utils';
+
+export type { CreateModalState };
 
 /** lowercase, spaces -> '-', strip anything not URL-safe (matches builderStore.slug). */
 function slug(name: string): string {
@@ -39,11 +43,6 @@ function deriveOperation(goal: string, location: string): { name: string; method
   return { name, method, httpPath: `/${location}/${opSlug}` };
 }
 
-/** Configures the two entry points that share this modal. */
-export type CreateModalState =
-  | { mode: 'api' }
-  | { mode: 'operation'; location?: string }; // location preset scopes it to an API (from the + hover)
-
 const OPERATION_EXAMPLES = [
   'List overdue invoices for a customer',
   'Charge a saved card and return the receipt',
@@ -54,6 +53,39 @@ const API_EXAMPLES = [
   'Look up a customer by email',
   'Start a background export job',
 ];
+
+/**
+ * Store-connected host for the ONE create modal — mounted once in App so any
+ * surface (the Sidebar's New API / + buttons, the canvas empty state) opens it
+ * via `setCreateModal`, sidebar open or not. Locations for the operation-mode
+ * picker are derived from the live workflow list.
+ */
+export function CreateModalHost() {
+  const workflows = useBuilderStore((s) => s.workflows);
+  const state = useBuilderStore((s) => s.createModal);
+  const setCreateModal = useBuilderStore((s) => s.setCreateModal);
+  const locations = useMemo(
+    () =>
+      flattenLocations(
+        buildApiTree(
+          workflows.map((w) => ({
+            id: w.id,
+            name: w.name,
+            path: w.path ?? `default/${w.id}`,
+            http: w.http,
+          })),
+        ),
+      ),
+    [workflows],
+  );
+  return (
+    <CreateModal
+      state={state}
+      onOpenChange={(open) => !open && setCreateModal(null)}
+      locations={locations}
+    />
+  );
+}
 
 /**
  * The agentic create surface — one centered modal for both "New API" (name +
@@ -82,18 +114,20 @@ export function CreateModal({
   const open = state !== null;
   const mode = state?.mode ?? 'operation';
   const presetLocation = state?.mode === 'operation' ? state.location : undefined;
+  const initialGoal = state?.mode === 'api' ? state.initialGoal : undefined;
   const examples = mode === 'api' ? API_EXAMPLES : OPERATION_EXAMPLES;
 
-  // Reset fields each time the modal opens; seed the location from the preset.
+  // Reset fields each time the modal opens; seed the location + goal from the
+  // preset (the goal arrives pre-filled from onboarding's first-build answer).
   useEffect(() => {
     if (!open) return;
     setApiName('');
-    setGoal('');
+    setGoal(initialGoal ?? '');
     setLocation(presetLocation ?? '');
     setLocationPickerOpen(false);
     const t = setTimeout(() => goalRef.current?.focus(), 60);
     return () => clearTimeout(t);
-  }, [open, presetLocation]);
+  }, [open, presetLocation, initialGoal]);
 
   const apiSlug = slug(apiName);
   const targetLocation = mode === 'api' ? apiSlug : location.trim() || 'default';

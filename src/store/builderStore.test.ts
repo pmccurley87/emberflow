@@ -758,6 +758,80 @@ describe('builderStore agent picker', () => {
   });
 });
 
+describe('builderStore guided setup transcript', () => {
+  beforeEach(() => {
+    vi.mocked(agentClient.startAgent).mockClear().mockResolvedValue('run-1');
+    useBuilderStore.setState({ agentChoice: {}, agentRun: null, guidedTranscript: [] });
+  });
+
+  const QUESTION_TEXT =
+    'Two things to decide.\n\n' +
+    '```emberflow-questions\n{"questions":[{"id":"envs","text":"Which environments?","options":["dev + prod"]}]}\n```\n';
+
+  it('continuation: appends the prior guided run (question blocks stripped) + a **You:** message', () => {
+    useBuilderStore.setState({
+      guidedTranscript: [{ type: 'message', text: 'Earlier turn.' }],
+      agentRun: {
+        id: 'run-0',
+        status: 'done',
+        guided: true,
+        events: [
+          { type: 'message', text: 'Reading the ground truth first.' },
+          { type: 'command', command: 'git status', commandStatus: 'completed' },
+          { type: 'message', text: QUESTION_TEXT },
+        ],
+      },
+    });
+
+    useBuilderStore.getState().beginGuidedSetup('Which environments?: dev + prod');
+
+    expect(useBuilderStore.getState().guidedTranscript).toEqual([
+      { type: 'message', text: 'Earlier turn.' },
+      { type: 'message', text: 'Reading the ground truth first.' },
+      { type: 'command', command: 'git status', commandStatus: 'completed' },
+      // The answered question block is stripped — only the prose survives.
+      { type: 'message', text: 'Two things to decide.' },
+      { type: 'message', text: '**You:** Which environments?: dev + prod' },
+    ]);
+    expect(agentClient.startAgent).toHaveBeenCalledWith(
+      { action: 'guided-setup', instruction: 'Which environments?: dev + prod' },
+      expect.anything(),
+    );
+  });
+
+  it('fresh start (no notes) clears the transcript', () => {
+    useBuilderStore.setState({
+      guidedTranscript: [{ type: 'message', text: 'Stale conversation.' }],
+    });
+    useBuilderStore.getState().beginGuidedSetup();
+    expect(useBuilderStore.getState().guidedTranscript).toEqual([]);
+    expect(agentClient.startAgent).toHaveBeenCalledWith(
+      { action: 'guided-setup', instruction: '' },
+      expect.anything(),
+    );
+  });
+
+  it('a leaked MouseEvent (onClick wiring) counts as a fresh start, not a continuation', () => {
+    useBuilderStore.setState({
+      guidedTranscript: [{ type: 'message', text: 'Stale conversation.' }],
+      agentRun: { id: 'run-0', status: 'done', guided: true, events: [] },
+    });
+    useBuilderStore.getState().beginGuidedSetup({ type: 'click' } as unknown as string);
+    expect(useBuilderStore.getState().guidedTranscript).toEqual([]);
+  });
+
+  it('notes without a prior guided run leave the transcript untouched', () => {
+    useBuilderStore.setState({
+      guidedTranscript: [{ type: 'message', text: 'Kept.' }],
+      agentRun: { id: 'run-9', status: 'done', events: [{ type: 'message', text: 'edit-flow run' }] },
+    });
+    useBuilderStore.getState().beginGuidedSetup('an answer');
+    expect(useBuilderStore.getState().guidedTranscript).toEqual([
+      { type: 'message', text: 'Kept.' },
+    ]);
+  });
+});
+
 describe('builderStore node sizing', () => {
   beforeEach(() => {
     useBuilderStore.setState({ flow: createLoginFlow(), run: null, logs: [], activeRun: null });

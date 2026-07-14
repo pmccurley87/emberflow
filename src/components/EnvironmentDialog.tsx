@@ -542,7 +542,10 @@ export function EnvironmentDialog({
         <DialogTitle className="flex items-center gap-2">
           {env.name}
           {env.protected && (
-            <span className="flex items-center gap-1 text-[10.5px] font-normal uppercase tracking-wide text-destructive-foreground/80">
+            <span
+              title="Protected — runs ask for confirmation before touching this environment."
+              className="flex items-center gap-1 text-[10.5px] font-normal uppercase tracking-wide text-destructive-foreground/80"
+            >
               <ShieldIcon className="size-3" /> protected
             </span>
           )}

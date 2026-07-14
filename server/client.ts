@@ -10,10 +10,16 @@ import type { ApiTree, FolderNode, ApiNode, OpSummary } from './apiStore';
 
 export type { ApiTree, FolderNode, ApiNode, OpSummary } from './apiStore';
 
-const DEFAULT_BASE_URL = 'http://127.0.0.1:8092';
-
 function baseUrl(): string {
-  return process.env.EMBERFLOW_RUNNER_URL ?? DEFAULT_BASE_URL;
+  // EMBERFLOW_RUNNER_PORT is how the runner itself is launched on a custom
+  // port (bin/commands.ts sets it for `emberflow dev --port`), and child
+  // processes — including agent runs invoking this CLI — inherit it. Without
+  // honoring it here, an agent spawned by a runner on :8095 would call back
+  // to the default :8092 and report the runner down.
+  return (
+    process.env.EMBERFLOW_RUNNER_URL ??
+    `http://127.0.0.1:${process.env.EMBERFLOW_RUNNER_PORT ?? 8092}`
+  );
 }
 
 /** SSE-shaped events emitted on GET /runs/:id/events — mirrors server/runRegistry.ts RunEvent. */

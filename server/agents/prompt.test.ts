@@ -553,20 +553,68 @@ describe('buildPrompt', () => {
       expect(prompt).toMatch(/emberflow\.mjs init --local --no-launch --no-git --js/);
     });
 
+    // With a runner-verified snapshot, the prompt states KNOWN facts and
+    // forbids re-probing them — no wasted first turn of CLI checks.
+    it('injects the runner-verified state as KNOWN facts instead of a probe step', () => {
+      const prompt = buildPrompt(guided, apisDir, relPath, [], 'typescript', null, {
+        gitRepo: true,
+        skillsInstalled: true,
+        environmentsConfigured: false,
+        infrastructurePresent: false,
+        opCount: 1,
+        onlyHello: true,
+      });
+      expect(prompt).toMatch(/KNOWN PROJECT STATE/);
+      expect(prompt).toMatch(/TRUST it, do not re-check/);
+      expect(prompt).toMatch(/git repository: yes/);
+      expect(prompt).toMatch(/only the default hello example/);
+      expect(prompt).not.toMatch(/READ THE GROUND TRUTH FIRST/);
+    });
+
+    it('missing git in the snapshot carries the stop-and-tell-user instruction', () => {
+      const prompt = buildPrompt(guided, apisDir, relPath, [], 'typescript', null, {
+        gitRepo: false,
+        skillsInstalled: false,
+        environmentsConfigured: false,
+        infrastructurePresent: false,
+        opCount: 1,
+        onlyHello: true,
+      });
+      expect(prompt).toMatch(/There is NO git repository: STOP/);
+    });
+
+    it('without a snapshot, falls back to the self-probe ground-truth step', () => {
+      const prompt = buildPrompt(guided, apisDir, relPath);
+      expect(prompt).toMatch(/READ THE GROUND TRUTH FIRST/);
+    });
+
     it('runs the environments interview and ENDS with numbered questions', () => {
       const prompt = buildPrompt(guided, apisDir, relPath);
       expect(prompt).toMatch(/ENVIRONMENTS INTERVIEW/);
       expect(prompt).toMatch(/emberflow\.environments\.json/);
-      expect(prompt).toMatch(/END your message with NUMBERED questions/i);
+      // The interview is a staged, structured form: ask BEFORE writing, via
+      // the emberflow-questions block the studio renders interactively —
+      // and skipping it is called out as failing the step.
+      expect(prompt).toMatch(/ask FIRST \(on the very first turn/i);
+      // Turn-shape contract: questions land immediately, work happens after.
+      expect(prompt).toMatch(/TURN SHAPE/);
+      expect(prompt).toMatch(/run NO commands and write NO files first/);
+      expect(prompt).toMatch(/emberflow-questions/);
+      expect(prompt).toMatch(/asks nothing has FAILED/i);
+      // Terse-output contract + the closing first-build question with the
+      // look-around escape hatch.
+      expect(prompt).toMatch(/Be TERSE/);
+      expect(prompt).toMatch(/What do you want to build first\?/);
+      expect(prompt).toMatch(/"action":"finish"/);
     });
 
     it('never writes secret VALUES and states the connection-proof + wrap-up summary', () => {
       const prompt = buildPrompt(guided, apisDir, relPath);
       expect(prompt).toMatch(/NEVER write secret or credential VALUES/i);
       expect(prompt).toMatch(/CONNECTION PROOF/);
-      expect(prompt).toMatch(/which backend\/model executed/i);
-      expect(prompt).toMatch(/WRAP-UP/);
-      expect(prompt).toMatch(/SKIPPED — ALREADY DONE/);
+      expect(prompt).toMatch(/no model ids/i);
+      expect(prompt).toMatch(/WRAP-UP \+ FIRST BUILD/);
+      expect(prompt).toMatch(/One line per completed step/);
     });
 
     it('does NOT get the doctor rule, mocks guidance, or the known-infrastructure preamble (it writes the manifest)', () => {

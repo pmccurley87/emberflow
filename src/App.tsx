@@ -1,9 +1,11 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { FlameIcon, PanelBottomOpenIcon, PanelLeftOpenIcon, PanelRightOpenIcon, XIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { AgentConsole } from './components/AgentConsole';
+import { CreateModalHost } from './components/CreateModal';
 import { Dock } from './components/Dock';
+import { EMPTY_STATE_DISMISSED_KEY, EmptyState } from './components/EmptyState';
 import { Inspector } from './components/Inspector';
 import { RunConsole, useRunConsole } from './components/RunLogPanel';
 import { RunbookView } from './components/RunbookView';
@@ -105,6 +107,17 @@ function CenterView() {
   const viewRegister = useBuilderStore((s) => s.viewRegister);
   const runnerOnline = useBuilderStore((s) => s.runnerOnline);
   const workspaceSource = useBuilderStore((s) => s.workspaceSource);
+  const setupStatus = useBuilderStore((s) => s.setupStatus);
+  const welcomeOpen = useBuilderStore((s) => s.welcomeOpen);
+  const setCreateModal = useBuilderStore((s) => s.setCreateModal);
+  const switchWorkflow = useBuilderStore((s) => s.switchWorkflow);
+  // Explicit dismissal of the post-onboarding empty state ("explore the
+  // example" path). Building a second op dismisses it implicitly — onlyHello
+  // stops matching once setupStatus refreshes (WelcomeDialog/StatusBar refetch
+  // it on agent-run finish), so no flag is written on that path.
+  const [emptyDismissed, setEmptyDismissed] = useState(
+    () => typeof localStorage !== 'undefined' && localStorage.getItem(EMPTY_STATE_DISMISSED_KEY) === '1',
+  );
   // Offline AND no runner workspace ever adopted → the calm offline panel. Once
   // a workspace has been adopted (workspaceSource === 'server'), a mid-session
   // runner blip keeps showing the flow; the StatusBar carries the offline signal.
@@ -112,6 +125,26 @@ function CenterView() {
     return (
       <div className="relative h-full min-h-0">
         <RunnerOfflinePanel />
+      </div>
+    );
+  }
+  // Post-onboarding: the bare hello-example project gets a clear starting point
+  // instead of someone else's op — hidden while the Welcome dialog still runs.
+  if (!welcomeOpen && !emptyDismissed && setupStatus?.ops.onlyHello) {
+    return (
+      <div className="relative h-full min-h-0">
+        <EmptyState
+          status={setupStatus}
+          dismissed={emptyDismissed}
+          onCreate={() => setCreateModal({ mode: 'api' })}
+          onExplore={() => {
+            if (typeof localStorage !== 'undefined') {
+              localStorage.setItem(EMPTY_STATE_DISMISSED_KEY, '1');
+            }
+            setEmptyDismissed(true);
+            switchWorkflow('default/hello');
+          }}
+        />
       </div>
     );
   }
@@ -272,6 +305,9 @@ export default function App() {
       )}
       </div>
       <StatusBar />
+      {/* The one New API / New operation modal — hosted here (not in the
+          Sidebar) so the canvas empty state can open it with the sidebar closed. */}
+      <CreateModalHost />
     </div>
   );
 }

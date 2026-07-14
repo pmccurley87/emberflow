@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUpIcon,
   CheckCircle2Icon,
   CheckIcon,
   CircleIcon,
   CopyIcon,
+  LoaderCircleIcon,
   MinusCircleIcon,
   SparklesIcon,
 } from 'lucide-react';
@@ -15,7 +16,14 @@ import { EnvironmentsDialog } from './EnvironmentsDialog';
 import { AgentStream } from './AgentStream';
 import { useBuilderStore } from '../store/builderStore';
 import type { SetupStatus } from '../store/setupClient';
-import type { AgentKind } from '../store/agentClient';
+import type { AgentEvent, AgentKind } from '../store/agentClient';
+import {
+  composeAnsweredSubset,
+  extractGuidedQuestions,
+  resolveGuidedAnswers,
+  type GuidedAnswers,
+  type GuidedQuestion,
+} from '../lib/guidedQuestions';
 
 const WELCOME_DISMISSED_KEY = 'emberflow.welcome.dismissed';
 /** Re-run this exact command to (re)install the agent skills only. */
@@ -126,7 +134,9 @@ function ChecklistRow({
   );
 }
 
-function CopyCommand({ command }: { command: string }) {
+/** Click-to-copy command pill. Shared: checklist rows here, and the
+ *  StatusBar update chip's restart/manual-install commands. */
+export function CopyCommand({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
@@ -212,6 +222,19 @@ export function deriveChecklist(status: SetupStatus, actions: WelcomeChecklistAc
       actionLabel: 'Settings',
       onAction: actions.onOpenSettings,
     },
+    // Skills sit with git + agent: all three are satisfied by `emberflow init`,
+    // so a fresh install reads as a solid completed block at the top — the
+    // remaining rows below are the journey still ahead. (No dependency forces
+    // skills after environments; the old ordering just interleaved done/todo.)
+    {
+      key: 'skills',
+      status: skillsInstalled ? 'complete' : 'incomplete',
+      title: 'Agent skills',
+      detail:
+        'Installed automatically by emberflow init — this project doesn’t have them yet. Add them (skills only, nothing else changes):',
+      completedDetail: 'Installed',
+      extra: skillsInstalled ? undefined : 'skills-command',
+    },
     {
       key: 'environments',
       status: environments.configured ? 'complete' : 'incomplete',
@@ -232,35 +255,14 @@ export function deriveChecklist(status: SetupStatus, actions: WelcomeChecklistAc
       onAction: environments.configured ? actions.onOpenEnvironments : actions.onSetupEnvironments,
       extra: environments.configured ? undefined : 'manage-manually',
     },
-    {
-      key: 'secrets',
-      status: !environments.configured
-        ? 'unavailable'
-        : environments.anyAuthConfigured
-          ? 'complete'
-          : 'incomplete',
-      title: 'Secrets & auth',
-      detail: !environments.configured
-        ? 'Configure environments first — secrets and auth live per environment.'
-        : 'Add the secrets and login your operations need.',
-      completedDetail: 'Auth configured',
-      actionLabel: 'Add secrets',
-      actionDisabled: !environments.configured,
-      onAction: actions.onOpenEnvironments,
-    },
-    {
-      key: 'skills',
-      status: skillsInstalled ? 'complete' : 'incomplete',
-      title: 'Agent skills',
-      detail:
-        'Installed automatically by emberflow init — this project doesn’t have them yet. Add them (skills only, nothing else changes):',
-      completedDetail: 'Installed',
-      extra: skillsInstalled ? undefined : 'skills-command',
-    },
+    // NOTE: secrets & auth deliberately have no checklist row — they only
+    // matter once an operation touches real infrastructure, and they live in
+    // the Manage Environment dialog when that day comes. Surfacing them at
+    // onboarding was premature noise.
     {
       key: 'infrastructure',
       status: infrastructure.present ? 'complete' : 'incomplete',
-      title: 'Infrastructure scouted',
+      title: 'Project scanned',
       detail: 'The agent scans this project for databases, APIs and providers it already uses.',
       completedDetail: `${infrastructure.itemCount ?? 0} item${infrastructure.itemCount === 1 ? '' : 's'} found`,
       actionLabel: 'Scout',
@@ -416,7 +418,7 @@ export function WelcomeChecklist({
 /**
  * Footer: the primary CTA mirrors the NEXT incomplete step (same handler as the
  * emphasized row), so the strongest affordance always advances setup. All
- * steps done → pull toward the real aha: asking the agent to build.
+ * steps done → pull toward the real aha: building the first API.
  * "Don't show again" is the true dismissal (records the flag).
  */
 function WelcomeFooter({
@@ -432,7 +434,7 @@ function WelcomeFooter({
   manualOpen?: boolean;
   onToggleManual?: () => void;
 }) {
-  const openAgentPanel = useBuilderStore((s) => s.openAgentPanel);
+  const setCreateModal = useBuilderStore((s) => s.setCreateModal);
   const setWelcomeOpen = useBuilderStore((s) => s.setWelcomeOpen);
   const items = status ? deriveChecklist(status, actions) : [];
   const nextIdx = status ? nextStepIndex(items) : -1;
@@ -460,17 +462,18 @@ function WelcomeFooter({
         )}
       </div>
       {/* The emphasized row owns the next-step primary; the footer only takes
-          over once everything is done — pulling toward the real aha. */}
+          over once everything is done — pulling toward the real aha. One door:
+          the create modal. */}
       {status && !next && (
         <Button
           size="sm"
           onClick={() => {
             setWelcomeOpen(false);
-            openAgentPanel();
+            setCreateModal({ mode: 'api' });
           }}
         >
           <SparklesIcon className="size-3.5" />
-          You're set — ask the agent to build
+          You're set — build your first API
         </Button>
       )}
     </div>
@@ -493,7 +496,7 @@ function guidedStartState(status: SetupStatus): {
   const skillsInstalled = status.skills.claude || status.skills.codex;
 
   const remaining: string[] = [];
-  if (!status.infrastructure.present) remaining.push('Scout your code for existing infrastructure');
+  if (!status.infrastructure.present) remaining.push('Scan your code for existing infrastructure');
   if (!status.environments.configured) remaining.push('Set up environments — it asks you a few questions');
   if (!skillsInstalled) remaining.push('Install the agent skills');
   remaining.push('Verify the skills and its own connection');
@@ -577,6 +580,64 @@ export function GuidedSetupIntro({
   );
 }
 
+/**
+ * Read-only checklist for the guided two-pane view: while the agent works
+ * through setup, the left pane is a quiet progress MAP — glyph + title +
+ * completed detail, one line per step. No buttons: the interactive actions
+ * (Set up with AI, Scout, …) are exactly what the agent is doing, and
+ * clicking them mid-run would just collide with the single-flight run.
+ */
+export function GuidedChecklistMap({ status, running }: { status: SetupStatus; running?: boolean }) {
+  const items = deriveChecklist(status, NOOP_ACTIONS);
+  const done = items.filter((i) => i.status === 'complete').length;
+  const nextIdx = nextStepIndex(items);
+  return (
+    <div className="space-y-3">
+      <Progress done={done} total={items.length} />
+      <div className="space-y-0.5">
+        {items.map((item, i) => (
+          <div
+            key={item.key}
+            className={cn(
+              'flex min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5',
+              i === nextIdx && 'bg-highlight/[0.06]',
+            )}
+          >
+            {/* While the agent runs, the NEXT step is the one being worked on —
+                its glyph becomes a spinner so the left map shows live activity.
+                Reduced motion: the spin stops but the ember ring still marks it. */}
+            {running && i === nextIdx ? (
+              <LoaderCircleIcon
+                className="mt-0.5 size-4 shrink-0 animate-spin text-highlight motion-reduce:animate-none"
+                aria-label="in progress"
+              />
+            ) : (
+              <StatusGlyph status={item.status} emphasized={i === nextIdx} />
+            )}
+            <span
+              className={cn(
+                'shrink-0 text-[12px]',
+                item.status === 'complete'
+                  ? 'text-muted-foreground'
+                  : i === nextIdx
+                    ? 'font-medium text-foreground'
+                    : 'text-muted-foreground',
+              )}
+            >
+              {item.title}
+            </span>
+            {item.status === 'complete' && item.completedDetail && (
+              <span className="min-w-0 truncate text-[11px] text-muted-foreground/60">
+                {item.completedDetail}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** One dim line acknowledging what's already in place — proof of progress
  *  without a row (and a button) per item. */
 export function DoneSummary({ status }: { status: SetupStatus }) {
@@ -648,6 +709,140 @@ function GuidedFollowUp({
 }
 
 /**
+ * The agent's trailing `emberflow-questions` block rendered as a clickable
+ * form (replacing the follow-up textarea while the run waits on answers).
+ * Single-select pills per question — the same chip vocabulary as the agent
+ * picker — plus an optional "Other…" free-text field that deselects the pills.
+ * Submit composes plaintext answers for the continuation run; an option with
+ * action 'finish' ends onboarding instead (`onFinish`), sending nothing; a
+ * lone typed 'first-build' answer routes into the create flow (`onBuild`).
+ */
+function GuidedQuestionForm({
+  questions,
+  onSubmit,
+  onFinish,
+  onBuild,
+  onTypeInstead,
+}: {
+  questions: GuidedQuestion[];
+  onSubmit: (composed: string) => void;
+  onFinish: () => void;
+  onBuild: (text: string) => void;
+  onTypeInstead: () => void;
+}) {
+  const [answers, setAnswers] = useState<GuidedAnswers>({});
+  // Wizard: ONE question at a time — picking an option answers it and
+  // advances; the last answer reveals Send. `cursor` never exceeds the last
+  // question; Back steps to any earlier answer without losing later ones.
+  const [cursor, setCursor] = useState(0);
+  const outcome = resolveGuidedAnswers(questions, answers);
+  const q = questions[Math.min(cursor, questions.length - 1)];
+  const answer = answers[q.id];
+  const last = cursor >= questions.length - 1;
+  const advance = () => setCursor((c) => Math.min(c + 1, questions.length - 1));
+  const submit = () => {
+    if (outcome.kind === 'finish') onFinish();
+    else if (outcome.kind === 'build') onBuild(outcome.text);
+    else if (outcome.kind === 'send') onSubmit(outcome.text);
+  };
+  return (
+    <div className="shrink-0 space-y-3 border-t border-border/70 p-3.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="text-[13.5px] font-medium leading-snug">{q.text}</div>
+        {questions.length > 1 && (
+          <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-muted-foreground">
+            {cursor + 1}/{questions.length}
+          </span>
+        )}
+      </div>
+      {q.why && (
+        <p className="max-w-[65ch] text-[11.5px] leading-snug text-muted-foreground">{q.why}</p>
+      )}
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={q.text}>
+        {q.options.map((opt) => {
+          const selected = answer?.option?.label === opt.label;
+          return (
+            <button
+              key={opt.label}
+              type="button"
+              aria-pressed={selected}
+              onClick={() => {
+                const next: GuidedAnswers = { ...answers, [q.id]: { option: opt } };
+                setAnswers(next);
+                // A 'submit' option sends IMMEDIATELY with whatever has been
+                // answered so far — a subset; unanswered questions are skipped.
+                if (opt.action === 'submit') onSubmit(composeAnsweredSubset(questions, next));
+                else if (!last) advance();
+              }}
+              className={cn(
+                'cursor-pointer rounded-md border px-3 py-1.5 text-[12.5px] transition-colors',
+                selected
+                  ? 'border-ring bg-secondary/60 font-medium text-foreground'
+                  : 'border-border text-foreground/80 hover:border-ring/50 hover:text-foreground',
+              )}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+      {q.custom && (
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={answer?.text ?? ''}
+            onChange={(e) =>
+              // Typing a custom answer deselects the pills for this question.
+              setAnswers((a) => ({ ...a, [q.id]: { text: e.target.value } }))
+            }
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (answer?.text ?? '').trim()) {
+                e.preventDefault();
+                if (last) submit();
+                else advance();
+              }
+            }}
+            placeholder="Or type your own…"
+            aria-label={`${q.text} — other`}
+            className="min-w-0 flex-1 rounded-md border border-input bg-input/30 px-2.5 py-1.5 text-[12.5px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          />
+          {!last && (answer?.text ?? '').trim() !== '' && (
+            <Button size="sm" variant="outline" onClick={advance}>
+              Next
+            </Button>
+          )}
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          {cursor > 0 && (
+            <button
+              type="button"
+              onClick={() => setCursor((c) => Math.max(0, c - 1))}
+              className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            >
+              Back
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onTypeInstead}
+            className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            Type a reply instead
+          </button>
+        </div>
+        {(last || outcome.kind !== 'incomplete') && (
+          <Button size="sm" onClick={submit} disabled={outcome.kind === 'incomplete'}>
+            Send answers
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
  * running/done phase: two panes. LEFT the live checklist (refetched on run
  * finish by the dialog), RIGHT the embedded agent stream + follow-up input.
  * `done` swaps the footer: everything complete → "You're set", else "Continue
@@ -656,13 +851,12 @@ function GuidedFollowUp({
 export function GuidedSetupPanes({
   status,
   actions,
-  chosenAgent,
-  onChooseAgent,
   events,
   running,
   failed,
   onFollowUp,
   onFinishComplete,
+  onBuildFirst,
   onContinue,
   onRetry,
   retryAgent,
@@ -672,14 +866,16 @@ export function GuidedSetupPanes({
 }: {
   status: SetupStatus | null;
   actions: WelcomeChecklistActions;
-  chosenAgent?: AgentKind;
-  onChooseAgent?: (kind: AgentKind) => void;
   events: React.ComponentProps<typeof AgentStream>['events'];
   running: boolean;
   /** The guided run ended on an error event (agent crashed / model rejected). */
   failed?: boolean;
   onFollowUp: (text: string) => void;
   onFinishComplete: () => void;
+  /** The lone 'first-build' question answered with a typed description —
+   *  open the real build flow pre-filled instead of sending a continuation.
+   *  Falls back to `onFollowUp` (send) when not provided. */
+  onBuildFirst?: (text: string) => void;
   onContinue: () => void;
   /** Re-kick the guided run after a failure. */
   onRetry?: () => void;
@@ -693,6 +889,31 @@ export function GuidedSetupPanes({
   followUpRef: React.RefObject<HTMLTextAreaElement | null>;
 }) {
   const allDone = status ? nextStepIndex(deriveChecklist(status, actions)) === -1 : false;
+
+  // The agent's final message may end with an `emberflow-questions` block —
+  // pull it out here (pure derivation over the event stream) so the stream
+  // renders the prose WITHOUT the raw fenced JSON and the block becomes the
+  // clickable form below. Malformed blocks extract as null and pass through
+  // untouched.
+  const { displayEvents, questions } = useMemo((): {
+    displayEvents: AgentEvent[];
+    questions: GuidedQuestion[] | null;
+  } => {
+    const idx = events.findLastIndex((e) => e.type === 'message');
+    if (idx === -1) return { displayEvents: events, questions: null };
+    const { stripped, questions: extracted } = extractGuidedQuestions(events[idx].text ?? '');
+    if (!extracted) return { displayEvents: events, questions: null };
+    const copy = events.slice();
+    copy[idx] = { ...copy[idx], text: stripped };
+    return { displayEvents: copy, questions: extracted };
+  }, [events]);
+
+  // "Type a reply instead" swaps the form for the plain textarea; a fresh set
+  // of questions (next agent turn) resets back to the form.
+  const [typedReply, setTypedReply] = useState(false);
+  useEffect(() => setTypedReply(false), [questions]);
+
+  const showForm = !running && !failed && questions !== null && !typedReply;
   const headerText = running
     ? 'Setting things up…'
     : failed
@@ -704,12 +925,7 @@ export function GuidedSetupPanes({
     <div className="grid min-h-0 grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
       <div className="min-h-0 overflow-y-auto">
         {status ? (
-          <WelcomeChecklist
-            status={status}
-            actions={actions}
-            chosenAgent={chosenAgent}
-            onChooseAgent={onChooseAgent}
-          />
+          <GuidedChecklistMap status={status} running={running} />
         ) : (
           <div className="py-6 text-center text-[12px] text-muted-foreground">Checking your project…</div>
         )}
@@ -726,10 +942,36 @@ export function GuidedSetupPanes({
         </div>
         <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 py-2.5 text-[12px]">
           {notice && <div className="text-[11px] text-highlight/90">{notice}</div>}
-          <AgentStream events={events} running={running} />
+          <AgentStream events={displayEvents} running={running} />
         </div>
-        <GuidedFollowUp running={running} onSend={onFollowUp} focusRef={followUpRef} />
-        {!running && (
+        {showForm && questions ? (
+          <GuidedQuestionForm
+            questions={questions}
+            onSubmit={onFollowUp}
+            onFinish={onFinishComplete}
+            onBuild={onBuildFirst ?? onFollowUp}
+            onTypeInstead={() => setTypedReply(true)}
+          />
+        ) : (
+          <>
+            <GuidedFollowUp running={running} onSend={onFollowUp} focusRef={followUpRef} />
+            {!running && !failed && questions !== null && typedReply && (
+              <div className="shrink-0 px-2.5 pb-2">
+                <button
+                  type="button"
+                  onClick={() => setTypedReply(false)}
+                  className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  Answer with the options instead
+                </button>
+              </div>
+            )}
+          </>
+        )}
+        {/* When the question form is up, the "Continue setup" nudge is redundant
+            — the form IS the continuation — so the footer only renders for the
+            failed / all-done / plain-textarea states. */}
+        {!running && (failed || allDone || questions === null) && (
           <div className="flex shrink-0 justify-end border-t border-border/70 px-2.5 py-2">
             {failed ? (
               retryAgent && onRetryWith ? (
@@ -744,7 +986,7 @@ export function GuidedSetupPanes({
             ) : allDone ? (
               <Button size="sm" onClick={onFinishComplete}>
                 <SparklesIcon className="size-3.5" />
-                You're set — ask the agent to build
+                You're set — build your first API
               </Button>
             ) : (
               <Button size="sm" variant="outline" onClick={onContinue}>
@@ -782,8 +1024,9 @@ export function WelcomeDialog() {
   const agentChoice = useBuilderStore((s) => s.agentChoice);
   const setAgentChoice = useBuilderStore((s) => s.setAgentChoice);
   const beginGuidedSetup = useBuilderStore((s) => s.beginGuidedSetup);
-  const openAgentPanel = useBuilderStore((s) => s.openAgentPanel);
+  const setCreateModal = useBuilderStore((s) => s.setCreateModal);
   const agentRun = useBuilderStore((s) => s.agentRun);
+  const guidedTranscript = useBuilderStore((s) => s.guidedTranscript);
   const [envDialogOpen, setEnvDialogOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const followUpRef = useRef<HTMLTextAreaElement | null>(null);
@@ -904,9 +1147,7 @@ export function WelcomeDialog() {
             <GuidedSetupPanes
               status={status}
               actions={actions}
-              chosenAgent={agentChoice.agent}
-              onChooseAgent={(kind) => setAgentChoice({ ...agentChoice, agent: kind })}
-              events={guidedRun?.events ?? []}
+              events={[...guidedTranscript, ...(guidedRun?.events ?? [])]}
               running={phase === 'running'}
               failed={guidedRun?.status === 'error'}
               onRetry={() => beginGuidedSetup()}
@@ -918,8 +1159,15 @@ export function WelcomeDialog() {
               notice={autoSwitchNotice ?? undefined}
               onFollowUp={(text) => beginGuidedSetup(text)}
               onFinishComplete={() => {
+                // One door: setup ends in the create modal, not the agent panel.
                 setWelcomeOpen(false);
-                openAgentPanel();
+                setCreateModal({ mode: 'api' });
+              }}
+              onBuildFirst={(text) => {
+                // A typed first-build answer IS the goal — open the real build
+                // flow pre-filled with it instead of another interview turn.
+                setWelcomeOpen(false);
+                setCreateModal({ mode: 'api', initialGoal: text });
               }}
               onContinue={() => followUpRef.current?.focus()}
               followUpRef={followUpRef}

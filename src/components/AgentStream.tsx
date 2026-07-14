@@ -32,13 +32,15 @@ function parseEmberflowOp(command?: string): { op: string; target?: string } | n
 /**
  * A run of consecutive shell commands, collapsed to a single quiet line
  * ("Ran N commands") that expands to the individual commands + their output.
- * A failed command in the group forces it open and tints it. This is the big
- * de-noiser: a single edit can run 30 inspection commands — nobody wants 30
- * rows, they want the reasoning with the mechanics tucked underneath.
+ * A failed command in the group tints the header destructive but stays
+ * COLLAPSED — the failure signal is visible, the raw output dump is a click
+ * away. This is the big de-noiser: a single edit can run 30 inspection
+ * commands — nobody wants 30 rows, they want the reasoning with the
+ * mechanics tucked underneath.
  */
 function CommandGroup({ commands }: { commands: AgentEvent[] }) {
   const anyFailed = commands.some((c) => c.commandStatus === 'failed');
-  const [open, setOpen] = useState(anyFailed);
+  const [open, setOpen] = useState(false);
   const running = commands.some((c) => c.commandStatus === 'in_progress');
   const label = commands.length === 1 ? '1 command' : `${commands.length} commands`;
   return (

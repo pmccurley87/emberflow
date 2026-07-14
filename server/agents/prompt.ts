@@ -71,6 +71,18 @@ export interface AvailableNode {
  * instead of inventing parallel config. The `scout-infrastructure` intent
  * itself is what WRITES this manifest, so it does not receive the block.
  */
+/** Ground truth the RUNNER already verified — injected into the guided-setup
+ *  prompt so the agent starts from known facts instead of burning its first
+ *  turn re-deriving them with CLI probes and file reads. */
+export interface GuidedSetupState {
+  gitRepo: boolean;
+  skillsInstalled: boolean;
+  environmentsConfigured: boolean;
+  infrastructurePresent: boolean;
+  opCount: number;
+  onlyHello: boolean;
+}
+
 export function buildPrompt(
   intent: AgentIntent,
   apisDir: string,
@@ -78,6 +90,7 @@ export function buildPrompt(
   availableNodes: AvailableNode[] = [],
   projectLanguage: 'javascript' | 'typescript' = 'typescript',
   infrastructure: InfrastructureManifest | null = null,
+  guidedState: GuidedSetupState | null = null,
 ): string {
   const lines: string[] = [];
 
@@ -523,13 +536,31 @@ export function buildPrompt(
         lines.push(`User notes / continuation answer (verbatim): ${intent.instruction}`);
         lines.push('');
       }
-      lines.push('Work through these steps IN ORDER, skipping any that your ground-truth read shows is already satisfied:');
+      lines.push(
+        "STYLE: this stream renders in a small onboarding panel, read by the person who owns this project — not by a developer tailing a terminal. Write to THEM about THEIR project: what you're doing for them and what you found that matters to them. Be TERSE — a few short lines per step. NEVER narrate tool mechanics (commands you ran, files you probed, exit codes), internal bookkeeping (\"ground truth\", \"manifest written\"), model ids, or state the checklist beside you already shows. No decorated asides either (\"★ Insight\" boxes, educational commentary) — even if your own configured output style calls for them, this panel is not the place. Good: \"Your project is a fresh start — no databases or APIs to wire up yet.\" Bad: \"Scout: bare scaffold, no .env, wrote emberflow/infrastructure.json (greenfield:true).\"",
+      );
       lines.push('');
       lines.push(
-        '1. READ THE GROUND TRUTH FIRST. Before acting, inspect what already exists so you can skip done work: whether this is a git repo, whether the agent skills are installed (.claude/skills/emberflow-basics or the codex/home equivalents), whether emberflow.environments.json exists, whether ' +
-          manifestPath +
-          ' exists, and whether the project has operations beyond the default hello example (list-workflows). State briefly what you found. If there is NO git repository, STOP and tell the user the exact command to run — `git init && git add -A && git commit -m "initial"` — because every later step depends on git snapshotting and nothing here can proceed without it.',
+        'ASKING QUESTIONS: whenever a step needs the user\'s input, END your message with a fenced block the studio renders as an interactive form (the user clicks options; their answers arrive as your next continuation message). Format — a fenced code block with language `emberflow-questions` containing JSON: {"questions":[{"id":"<slug>","text":"<question>","why":"<one short line of context — why this matters, optional>","options":["<opt1>","<opt2>"],"custom":true}]}. "options" are clickable choices; "custom": true also offers a free-text field. An option may be an object {"label":"…","action":"finish"} — choosing it ends onboarding client-side — or {"label":"…","action":"submit"} — choosing it sends the answers immediately, skipping any remaining questions. Use "why" whenever the user might not know why they\'re being asked — assume they are new to Emberflow. Nothing may follow the block.',
       );
+      lines.push('');
+      lines.push(
+        'TURN SHAPE — the user must never wait before being asked anything. FIRST TURN (no continuation answer in the instruction): if the environments interview (step 5) is still needed, output ONE short greeting line and END IMMEDIATELY with the interview questions block — run NO commands and write NO files first; every working step (scout, skills, environments file) happens on the CONTINUATION turn after their answers arrive. If environments are already configured, the first turn instead does the working steps directly and ends with the step-6 block.',
+      );
+      lines.push('');
+      lines.push('Work through these steps IN ORDER, skipping any that your ground-truth read shows is already satisfied:');
+      lines.push('');
+      if (guidedState) {
+        lines.push(
+          `1. KNOWN PROJECT STATE — verified by the runner as this run started; TRUST it, do not re-check any of it with commands or file reads: git repository: ${guidedState.gitRepo ? 'yes' : 'NO'}; agent skills installed: ${guidedState.skillsInstalled ? 'yes' : 'no'}; environments configured: ${guidedState.environmentsConfigured ? 'yes' : 'no'}; infrastructure manifest (${manifestPath}): ${guidedState.infrastructurePresent ? 'present' : 'absent'}; operations: ${guidedState.opCount}${guidedState.onlyHello ? ' (only the default hello example)' : ''}. Skip every step this state already satisfies.${guidedState.gitRepo ? '' : ' There is NO git repository: STOP and tell the user to run `git init && git add -A && git commit -m "initial"` — nothing else can proceed without it.'}`,
+        );
+      } else {
+        lines.push(
+          '1. READ THE GROUND TRUTH FIRST. Before acting, inspect what already exists so you can skip done work: whether this is a git repo, whether the agent skills are installed (.claude/skills/emberflow-basics or the codex/home equivalents), whether emberflow.environments.json exists, whether ' +
+            manifestPath +
+            ' exists, and whether the project has operations beyond the default hello example (list-workflows). If there is NO git repository, STOP and tell the user the exact command to run — `git init && git add -A && git commit -m "initial"` — because every later step depends on git snapshotting and nothing here can proceed without it.',
+        );
+      }
       lines.push('');
       lines.push(
         `2. GREENFIELD JUDGMENT + SCOUT. If ${manifestPath} is already present, SKIP this step (say so). Otherwise inspect the project the way the infrastructure scout does — dependencies (package.json + lockfiles, requirements.txt / pyproject.toml, go.mod, Gemfile, composer.json), config (docker-compose.yml, Dockerfile, .env.example NAMES only, prisma/schema.prisma, ORM/framework config), ORM schemas / migrations, env-var REFERENCES in source (process.env.X — NAMES only), HTTP clients / SDKs, and the project's own routes. If the project has real infrastructure (BROWNFIELD), run the full scout and WRITE ${manifestPath} describing it (version, scannedAt, greenfield:false, summary, items[] each with kind, name, evidence file+note, suggestedSecretRefs env-var NAMES only). If it is a bare scaffold (GREENFIELD — no databases, external APIs or providers), WRITE ${manifestPath} with "greenfield": true, empty items, and a one-line summary saying so — do NOT invent items to fill space. Manifest kinds: database, http-api, queue, cache, email, llm, auth, framework, storage, other.`,
@@ -546,11 +577,11 @@ export function buildPrompt(
       );
       lines.push('');
       lines.push(
-        '4. CONNECTION PROOF. This run itself proves the agent CLI works end-to-end — you ARE that agent. No separate action is needed; in your wrap-up, state which backend/model executed this run so the user knows the connection is verified.',
+        '4. CONNECTION PROOF. This run itself proves the agent CLI works end-to-end — you ARE that agent. No separate action, no model ids: one plain sentence at wrap-up like "Connection verified — I\'m running against your project."',
       );
       lines.push('');
       lines.push(
-        `5. ENVIRONMENTS INTERVIEW. If emberflow.environments.json already configures environments, SKIP creating them (you may still refine on request). Otherwise write emberflow.environments.json (STRUCTURE ONLY) from what the user's notes and the project let you infer: a "defaultEnvironment" plus one entry per environment under "environments", using kebab/lower-case names (e.g. "dev", "staging", "prod"). Each environment's "secrets" is a LIST of key NAMES, never a value map; put base URLs and other non-secret config under "vars"; mark production-like environments "protected": true (this forces studio safe mode for them). Where a value is unknown, write a clearly-named placeholder (e.g. "baseUrl": "https://CHANGE-ME.example.com") rather than hunting for it. emberflow.environments.json is gitignored — mention that so the user isn't surprised it doesn't show in git status. END your message with NUMBERED questions (one per line) for the open choices: which environments, which is the default, which are production-like (protected), their base URLs, and which secret values the user must fill in via the studio's Manage Environment dialog. Follow-up messages (same panel thread) continue this interview and refine the file.`,
+        `5. ENVIRONMENTS INTERVIEW — ask FIRST (on the very first turn, before any other work; see TURN SHAPE), write after. If emberflow.environments.json already configures environments, SKIP (you may still refine on request). Otherwise end the FIRST turn with an emberflow-questions block whose FIRST question is whether to set environments up now at all: text like "Set up your environments now?", why like "Environments tell Emberflow where runs point — mock data now, your real dev or prod systems later. Takes a minute, and you can change it any time.", options ["Set up now",{"label":"Later — I'll do it from the setup checklist","action":"submit"}] (action "submit" sends the answer immediately, skipping the remaining questions). If they choose later: on the continuation turn do steps 2–4 only, then step 6, noting they can return via the Environments step in the setup checklist. If now: the SAME block also carries the detail questions (each with a one-line "why"): which environments (options like "dev + prod", "dev + staging + prod", custom), which is the default, which are production-like (protected), and their base URLs (custom text) — the form is a one-at-a-time wizard, so later answers simply arrive alongside; if they chose "Later" the other answers are ignored. A guided setup that decides everything itself and asks nothing has FAILED this step. CONTINUATION turn (answers arrive as your instruction): NOW do the working steps 2–4 (scout, skills, connection) and write emberflow.environments.json (STRUCTURE ONLY) from their answers — "defaultEnvironment" plus entries under "environments" (kebab/lower-case names); "secrets" is a LIST of key NAMES, never a value map; base URLs and non-secret config under "vars"; production-like environments get "protected": true (forces studio safe mode). Unknown values → clearly-named placeholders (e.g. "baseUrl": "https://CHANGE-ME.example.com"). Mention once that the file is gitignored. Then finish with step 6.`,
       );
       lines.push('');
       lines.push(
@@ -560,7 +591,7 @@ export function buildPrompt(
       );
       lines.push('');
       lines.push(
-        '6. WRAP-UP. Finish with a checklist-shaped summary in three groups: DONE (what this run completed), NEEDS YOU (secret values to enter, and the numbered environment questions still unanswered), and SKIPPED — ALREADY DONE (steps your ground-truth read showed were already satisfied, so the user can see nothing was needlessly redone).',
+        '6. WRAP-UP + FIRST BUILD. One line per completed step (done/skipped) plus anything that genuinely needs the user (secret values to enter) — no prose report. Then END with a final emberflow-questions block: {"id":"first-build","text":"What do you want to build first?","options":[{"label":"Just look around","action":"finish"}],"custom":true}. If the user answers with a description, scaffold that operation in a continuation turn — create the operation file(s) following the emberflow-new-workflow skill (runnable in mock mode, scenarios included) and say which operation to open.',
       );
       break;
     }

@@ -34,6 +34,7 @@ import { cancelAgent, fetchAgentDiff, revertAgent, startAgent, streamAgent } fro
 import type { AgentEvent, AgentIntent, AgentKind, StartAgentOptions } from './agentClient';
 import { fetchSetupStatus } from './setupClient';
 import type { SetupStatus } from './setupClient';
+import { extractGuidedQuestions } from '../lib/guidedQuestions';
 
 export interface WorkflowSummary {
   id: string;
@@ -44,6 +45,14 @@ export interface WorkflowSummary {
   /** HTTP trigger method/path, when this operation is routed. */
   http?: { method: string; path: string };
 }
+
+/** Configures the two entry points that share the create modal: "New API"
+ *  (name + first operation) and "New operation" (optionally scoped to an API
+ *  via `location`). Owned here so any surface — Sidebar, canvas empty state —
+ *  opens the SAME modal (hosted once by CreateModalHost). */
+export type CreateModalState =
+  | { mode: 'api'; initialGoal?: string }
+  | { mode: 'operation'; location?: string };
 
 /** Per-operation path/http metadata, keyed by id — sourced from the runner's
  *  `/workflows` `operations` array (the store's `WorkflowDefinition`s don't
@@ -236,6 +245,11 @@ interface BuilderState {
    *  on a fresh project (see WelcomeDialog); always reachable from the Toolbar. */
   welcomeOpen: boolean;
   setWelcomeOpen(open: boolean): void;
+  /** The New API / New operation modal's open state. Lifted to the store so
+   *  surfaces outside the Sidebar (e.g. the canvas empty state) share the ONE
+   *  modal instead of duplicating it; null = closed. Hosted by CreateModalHost. */
+  createModal: CreateModalState | null;
+  setCreateModal(state: CreateModalState | null): void;
   /** Whether the Settings dialog is open. Lifted to the store so the Welcome
    *  checklist's "coding agent" row can deep-link into it. */
   settingsOpen: boolean;
@@ -333,6 +347,11 @@ interface BuilderState {
      *  mid-run — the phase derives from this flag + `status`. */
     guided?: boolean;
   } | null;
+  /** Prior guided-setup conversation (finished runs' events + the user's
+   *  answers), preserved across continuation runs — each continuation REPLACES
+   *  the agentRun slot, so without this the onboarding pane would wipe to
+   *  "Thinking…" on every answer. Cleared on a fresh (no-notes) start. */
+  guidedTranscript: AgentEvent[];
   /** Persisted agent+model picked in Settings; used as runAgent's default opts. */
   agentChoice: AgentChoice;
   setAgentChoice(choice: AgentChoice): void;
@@ -829,6 +848,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     agentPanelOpen: false,
     agentEnvSetup: false,
     welcomeOpen: false,
+    createModal: null,
     settingsOpen: false,
     settingsFromWelcome: false,
     setupStatus: null,
@@ -843,6 +863,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     activeRunMock: false,
     scenarioTestPending: null,
     agentRun: null,
+    guidedTranscript: [],
     buildingOperationId: null,
     agentChoice: initialAgentChoice,
     setAgentChoice(choice) {
@@ -1269,11 +1290,36 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       // onClick handlers leak a MouseEvent as the first arg — only a real string
       // is a continuation answer; anything else means "start with no notes".
       const notes = typeof instruction === 'string' ? instruction.trim() : '';
+      const prior = get().agentRun;
+      if (notes && prior?.guided) {
+        // Continuation: the new run REPLACES the agentRun slot, so fold the
+        // finished run's events plus the user's answer into the persistent
+        // transcript — otherwise the pane wipes to "Thinking…" and the whole
+        // conversation vanishes. Question blocks are stripped here (they were
+        // answered; re-rendering them as raw fences would be noise).
+        const stripped = prior.events.map((e) =>
+          e.type === 'message' && e.text ? { ...e, text: extractGuidedQuestions(e.text).stripped } : e,
+        );
+        set((s) => ({
+          guidedTranscript: [
+            ...s.guidedTranscript,
+            ...stripped,
+            { type: 'message', text: `**You:** ${notes}` },
+          ],
+        }));
+      } else if (!notes) {
+        // Fresh start: a brand-new guided run begins a brand-new conversation.
+        set({ guidedTranscript: [] });
+      }
       void get().runAgent({ action: 'guided-setup', instruction: notes });
     },
 
     setWelcomeOpen(open) {
       set({ welcomeOpen: open });
+    },
+
+    setCreateModal(state) {
+      set({ createModal: state });
     },
 
     setSettingsOpen(open) {

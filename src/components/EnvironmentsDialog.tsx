@@ -98,7 +98,10 @@ export function EnvironmentsDialog({
                       </span>
                     )}
                     {env.protected && (
-                      <span className="text-[10px] uppercase tracking-wide text-destructive-foreground/80">
+                      <span
+                        title="Protected — runs ask for confirmation before touching this environment."
+                        className="text-[10px] uppercase tracking-wide text-destructive-foreground/80"
+                      >
                         protected
                       </span>
                     )}

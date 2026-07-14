@@ -47,8 +47,10 @@ export function probe(bin: string): { version: string | null } | undefined {
   return { version: match ? match[0] : null };
 }
 
-/** Numeric segment compare; a parseable version always beats null. */
-function newer(a: string | null, b: string | null): boolean {
+/** Numeric segment compare; a parseable version always beats null.
+ *  Shared: agent-CLI detection here, and the package update check
+ *  (server/updateCheck.ts) both rank semver-ish strings with it. */
+export function newer(a: string | null, b: string | null): boolean {
   if (a === null) return false;
   if (b === null) return true;
   const as = a.split('.').map(Number);

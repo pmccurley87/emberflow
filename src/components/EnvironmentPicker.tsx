@@ -201,7 +201,10 @@ export function EnvironmentPicker() {
                     {env.protected && <span className="size-1.5 rounded-full bg-destructive" />}
                     <span className="text-[12.5px] font-medium">{env.name}</span>
                     {env.protected && (
-                      <span className="ml-auto text-[10.5px] uppercase tracking-wide text-destructive-foreground/80">
+                      <span
+                        title="Protected — runs ask for confirmation before touching this environment."
+                        className="ml-auto text-[10.5px] uppercase tracking-wide text-destructive-foreground/80"
+                      >
                         protected
                       </span>
                     )}

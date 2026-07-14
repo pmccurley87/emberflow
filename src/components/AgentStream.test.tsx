@@ -54,6 +54,28 @@ describe('AgentStream', () => {
     expect(out).toContain('list-workflows');
   });
 
+  it('failed command group: stays collapsed with a destructive header, output hidden until click', () => {
+    const failedStream: AgentEvent[] = [
+      { type: 'command', command: 'npm run build', commandStatus: 'in_progress' },
+      {
+        type: 'command',
+        command: 'npm run build',
+        commandStatus: 'failed',
+        exitCode: 1,
+        output: 'RAW-FAILURE-DUMP {"name":"pkg","dependencies":{}}',
+      },
+    ];
+    const out = renderToStaticMarkup(<AgentStream events={failedStream} running={false} />);
+    // Same collapsed affordance as a successful group…
+    expect(out).toContain('Ran 1 command');
+    // …with the failure signal on the header (destructive dot + tinted label).
+    expect(out).toContain('bg-destructive');
+    expect(out).toContain('text-destructive/90');
+    // The raw output does NOT dump into the stream — it's behind the click.
+    expect(out).not.toContain('RAW-FAILURE-DUMP');
+    expect(out).not.toContain('npm run build');
+  });
+
   it('shows a Thinking… indicator while running with no blocks yet', () => {
     const out = renderToStaticMarkup(<AgentStream events={[{ type: 'started' }]} running={true} />);
     expect(out).toContain('Thinking…');

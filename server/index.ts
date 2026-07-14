@@ -47,6 +47,7 @@ import { isPathWithin } from './pathSafety';
 import { attachCredential } from './authAttach';
 import { redactSecrets } from './redact';
 import { runScenarioSuiteFor, ScenarioTestUsageError } from './testRunner';
+import { checkForUpdate, isLinkedInstall, ownVersion, runNpmInstall } from './updateCheck';
 import { diagnoseOperation } from '../src/engine/diagnostics';
 import { seedParamDefaults } from './normalizeFlow';
 
@@ -163,6 +164,27 @@ const agentRuns = new AgentRunManager(
   // Fresh per run: re-read emberflow/infrastructure.json so a scout that ran
   // earlier this session primes later prompts. Malformed → null (agent guesses).
   () => loadInfrastructure(project ? project.root : projectDir),
+  // Runner-verified setup snapshot for guided-setup prompts: the same facts
+  // /setup-status reports, computed fresh at run start, so the agent starts
+  // from KNOWN state instead of probing for it.
+  () => {
+    const root = project ? project.root : process.cwd();
+    let envs = environmentsFile;
+    try {
+      envs = loadEnvironments(root);
+    } catch {
+      /* keep last good */
+    }
+    const ops = apiStore.list();
+    return {
+      gitRepo: isGitRepo(root),
+      skillsInstalled: skillInstalled(root, 'claude') || skillInstalled(root, 'codex'),
+      environmentsConfigured: envs.configured,
+      infrastructurePresent: readInfrastructure() !== null,
+      opCount: ops.length,
+      onlyHello: ops.length === 1 && ops[0]?.id === 'default/hello',
+    };
+  },
 );
 
 // Hot-reload agent-authored nodes: watch the project's config and rebuild the
@@ -911,6 +933,53 @@ function skillInstalled(root: string, harness: 'claude' | 'codex'): boolean {
     existsSync(join(base, `.${harness}`, 'skills', 'emberflow-basics', 'SKILL.md')),
   );
 }
+
+// Package update notifier: the studio asks once per page load; checkForUpdate
+// caches registry hits for an hour and fails silent — an unreachable registry
+// (or a pre-publish package) just reports "no update".
+api.get('/update-status', async (_req: Request, res: Response) => {
+  const current = ownVersion() ?? '0.0.0';
+  const check = await checkForUpdate(current);
+  if (!check) {
+    res.json({ current, updateAvailable: false });
+    return;
+  }
+  res.json(check);
+});
+
+// One-click updater: npm-installs the latest package into the consumer
+// project. Single-flight — a second click while npm runs gets a 409, not a
+// second npm process fighting over node_modules.
+let updateInFlight = false;
+api.post('/update', async (_req: Request, res: Response) => {
+  if (!project) {
+    res.status(400).json({ ok: false, error: 'not a consumer project — no project is loaded to update' });
+    return;
+  }
+  if (isLinkedInstall(project.root)) {
+    res.status(400).json({
+      ok: false,
+      error:
+        'node_modules/@xdelivered/emberflow is a symlink (file:/npm-link dev setup) — refusing to npm install over it',
+    });
+    return;
+  }
+  if (updateInFlight) {
+    res.status(409).json({ ok: false, error: 'update already running' });
+    return;
+  }
+  updateInFlight = true;
+  try {
+    const result = await runNpmInstall(project.root);
+    if (result.ok) {
+      res.json({ ok: true, restartRequired: true });
+    } else {
+      res.status(500).json({ ok: false, error: result.error });
+    }
+  } finally {
+    updateInFlight = false;
+  }
+});
 
 /** The /setup-status `infrastructure` field: presence + a shallow summary. */
 function infraStatus(): { present: boolean; scannedAt?: string; itemCount?: number } {

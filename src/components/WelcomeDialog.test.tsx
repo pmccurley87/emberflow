@@ -43,13 +43,14 @@ describe('WelcomeChecklist', () => {
       'Git repository',
       'Coding agent',
       'Environments',
-      'Secrets &amp; auth',
       'Agent skills',
-      'Infrastructure scouted',
+      'Project scanned',
       'First operation',
     ]) {
       expect(out).toContain(title);
     }
+    // Secrets & auth deliberately has no row — it lives in Manage Environment.
+    expect(out).not.toContain('Secrets');
   });
 
   it('fresh project: shows the git init command and disables agent-driven actions', () => {
@@ -119,12 +120,12 @@ describe('WelcomeChecklist', () => {
 
   it('progress + next-step emphasis: fresh shows 0/6 with the first row emphasized; fully-done has no next step', () => {
     const fresh = html(FRESH);
-    expect(fresh).toContain('0 of 7 steps done');
+    expect(fresh).toContain('0 of 6 steps done');
     expect(fresh).toContain('bg-highlight/[0.06]'); // exactly one emphasized row
     expect(fresh.split('bg-highlight/[0.06]').length - 1).toBe(1);
 
     const done = html(CONFIGURED);
-    expect(done).toContain('7 of 7 steps done');
+    expect(done).toContain('6 of 6 steps done');
     expect(done).not.toContain('bg-highlight/[0.06]'); // nothing left to emphasize
   });
 });
@@ -166,7 +167,7 @@ describe('GuidedSetupIntro (idle phase)', () => {
     const out = renderToStaticMarkup(<GuidedSetupIntro status={READY} onStart={() => {}} />);
     expect(out).not.toContain('disabled=""');
     // Remaining steps derived from checklist state.
-    expect(out).toContain('Scout your code for existing infrastructure');
+    expect(out).toContain('Scan your code for existing infrastructure');
     expect(out).toContain('Set up environments');
     expect(out).toContain('Install the agent skills');
     expect(out).toContain('Verify the skills and its own connection');
@@ -174,7 +175,7 @@ describe('GuidedSetupIntro (idle phase)', () => {
 
   it('configured project: step-list drops done steps but always verifies connection', () => {
     const out = renderToStaticMarkup(<GuidedSetupIntro status={CONFIGURED} onStart={() => {}} />);
-    expect(out).not.toContain('Scout your code');
+    expect(out).not.toContain('Scan your code');
     expect(out).not.toContain('Set up environments');
     expect(out).not.toContain('Install the agent skills');
     expect(out).toContain('Verify the skills and its own connection');
@@ -234,6 +235,14 @@ describe('GuidedSetupPanes (running/done phase)', () => {
     expect(out).toContain('Git repository');
     expect(out).toContain('Reading the ground truth first.');
     expect(out).toContain('Setting things up…');
+    // While the agent works, the left pane is a READ-ONLY progress map — the
+    // interactive actions are exactly what the agent is doing, so no buttons.
+    expect(out).not.toContain('Set up with AI');
+    expect(out).not.toContain('Scout');
+    expect(out).not.toContain('Open hello op');
+    // The step being worked on (next incomplete) spins while the run is live.
+    expect(out).toContain('aria-label="in progress"');
+    expect(out).toContain('animate-spin');
     // Follow-up input is disabled while working.
     expect(out).toContain('Agent is working…');
     // No done-phase footer CTA while running.
@@ -255,6 +264,8 @@ describe('GuidedSetupPanes (running/done phase)', () => {
       />,
     );
     expect(out).toContain('Waiting on you');
+    // Not running → no spinner on the map.
+    expect(out).not.toContain('aria-label="in progress"');
     expect(out).toContain('Continue setup');
     expect(out).not.toContain("You're set");
   });
@@ -318,6 +329,136 @@ describe('GuidedSetupPanes (running/done phase)', () => {
     expect(out).toContain('switched to Claude and retried automatically');
   });
 
+  /** Agent final message ending with the emberflow-questions contract block. */
+  const QUESTION_TEXT =
+    'Steps 1–4 done. Two things to decide.\n\n' +
+    '```emberflow-questions\n' +
+    '{"questions":[' +
+    '{"id":"envs","text":"Which environments?","options":["dev + prod","dev + staging + prod"],"custom":true},' +
+    '{"id":"first-build","text":"What do you want to build first?","options":[{"label":"Just look around","action":"finish"}],"custom":true}' +
+    ']}\n' +
+    '```\n';
+  const questionStream = [
+    { type: 'message' as const, text: 'Reading the ground truth first.' },
+    { type: 'message' as const, text: QUESTION_TEXT },
+  ];
+
+  it('questions block: renders clickable pills instead of the textarea, raw block stripped', () => {
+    const out = renderToStaticMarkup(
+      <GuidedSetupPanes
+        status={READY}
+        actions={NOOP}
+        events={questionStream}
+        running={false}
+        onFollowUp={() => {}}
+        onFinishComplete={() => {}}
+        onContinue={() => {}}
+        followUpRef={{ current: null }}
+      />,
+    );
+    // The raw fenced block never renders — not as a code block, not as text.
+    expect(out).not.toContain('emberflow-questions');
+    // Prose before the block still shows.
+    expect(out).toContain('Two things to decide.');
+    // Wizard: ONE question at a time — the FIRST question's pills show, with
+    // a position counter; the second question is not rendered yet.
+    expect(out).toContain('Which environments?');
+    expect(out).toMatch(/aria-pressed="false"[^>]*>dev \+ prod</);
+    expect(out).toContain('dev + staging + prod');
+    expect(out).not.toContain('Just look around');
+    expect(out).toContain('1/2');
+    // One custom free-text field (current question only).
+    expect(out.split('Or type your own…').length - 1).toBe(1);
+    // Nothing answered yet → no Send button (it appears on the last step),
+    // but the escape hatch is always there.
+    expect(out).not.toContain('Send answers');
+    expect(out).toContain('Type a reply instead');
+    // The form replaces the textarea AND the redundant Continue-setup nudge.
+    expect(out).not.toContain('Answer the agent’s questions…');
+    expect(out).not.toContain('Continue setup');
+  });
+
+  it('questions block: a why renders as quiet rationale under the question text', () => {
+    const whyStream = [
+      {
+        type: 'message' as const,
+        text:
+          'One thing to decide.\n\n```emberflow-questions\n' +
+          '{"questions":[{"id":"envs","text":"Which environments?","options":["dev + prod"],' +
+          '"why":"Runs stay in Mock until you point them somewhere real."}]}\n```\n',
+      },
+    ];
+    const out = renderToStaticMarkup(
+      <GuidedSetupPanes
+        status={READY}
+        actions={NOOP}
+        events={whyStream}
+        running={false}
+        onFollowUp={() => {}}
+        onFinishComplete={() => {}}
+        onContinue={() => {}}
+        followUpRef={{ current: null }}
+      />,
+    );
+    expect(out).toContain('Which environments?');
+    expect(out).toContain('Runs stay in Mock until you point them somewhere real.');
+  });
+
+  it('questions block while running: form suppressed, textarea stays (disabled), block still stripped', () => {
+    const out = renderToStaticMarkup(
+      <GuidedSetupPanes
+        status={READY}
+        actions={NOOP}
+        events={questionStream}
+        running={true}
+        onFollowUp={() => {}}
+        onFinishComplete={() => {}}
+        onContinue={() => {}}
+        followUpRef={{ current: null }}
+      />,
+    );
+    expect(out).not.toContain('Send answers');
+    expect(out).toContain('Agent is working…');
+    expect(out).not.toContain('emberflow-questions');
+  });
+
+  it('questions block + failed run: retry CTA wins, no form', () => {
+    const out = renderToStaticMarkup(
+      <GuidedSetupPanes
+        status={READY}
+        actions={NOOP}
+        events={[...questionStream, { type: 'error' as const, text: 'codex exited with code 1' }]}
+        running={false}
+        failed={true}
+        onFollowUp={() => {}}
+        onFinishComplete={() => {}}
+        onContinue={() => {}}
+        onRetry={() => {}}
+        followUpRef={{ current: null }}
+      />,
+    );
+    expect(out).not.toContain('Send answers');
+    expect(out).toContain('Try again');
+  });
+
+  it('no questions block: the follow-up textarea renders unchanged', () => {
+    const out = renderToStaticMarkup(
+      <GuidedSetupPanes
+        status={READY}
+        actions={NOOP}
+        events={stream}
+        running={false}
+        onFollowUp={() => {}}
+        onFinishComplete={() => {}}
+        onContinue={() => {}}
+        followUpRef={{ current: null }}
+      />,
+    );
+    expect(out).toContain('Answer the agent’s questions…');
+    expect(out).not.toContain('Send answers');
+    expect(out).toContain('Continue setup');
+  });
+
   it('done + complete: shows the "You\'re set" CTA', () => {
     const out = renderToStaticMarkup(
       <GuidedSetupPanes
@@ -331,7 +472,7 @@ describe('GuidedSetupPanes (running/done phase)', () => {
         followUpRef={{ current: null }}
       />,
     );
-    expect(out).toContain('ask the agent to build');
+    expect(out).toContain('build your first API');
     expect(out).not.toContain('Continue setup');
   });
 });

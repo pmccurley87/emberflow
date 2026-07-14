@@ -71,3 +71,15 @@ export function buildApiTree(ops: OpInput[]): ApiTreeNode[] {
   tree.sort((a, b) => a.name.localeCompare(b.name));
   return tree;
 }
+
+/** Flatten an API tree into every API/folder path (e.g. 'default', 'billing', 'billing/charges'). */
+export function flattenLocations(tree: ApiTreeNode[]): string[] {
+  const paths: string[] = [];
+  const walk = (node: ApiTreeNode, prefix: string) => {
+    const path = prefix ? `${prefix}/${node.name}` : node.name;
+    paths.push(path);
+    for (const folder of node.folders) walk(folder, path);
+  };
+  for (const api of tree) walk(api, '');
+  return paths;
+}

@@ -37,11 +37,12 @@ export interface SetupStatus {
  * keep in step if rows are added or their completion rules change.
  */
 export function setupProgress(status: SetupStatus): { done: number; total: number } {
+  // NOTE: secrets & auth deliberately have no row (matches deriveChecklist) —
+  // they live in the Manage Environment dialog, not onboarding.
   const rows = [
     status.git.repo,
     status.agents.length > 0,
     status.environments.configured,
-    status.environments.configured && status.environments.anyAuthConfigured,
     status.skills.claude || status.skills.codex,
     status.infrastructure.present,
     status.ops.count > 1,

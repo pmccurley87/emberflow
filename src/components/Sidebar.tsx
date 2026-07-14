@@ -15,8 +15,6 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Badge } from '@/components/ui/badge';
-import { CreateModal } from './CreateModal';
-import type { CreateModalState } from './CreateModal';
 import { useBuilderStore } from '../store/builderStore';
 import { buildApiTree } from '../store/apiTree';
 import type { ApiTreeNode, OpItem } from '../store/apiTree';
@@ -233,18 +231,6 @@ function ApiSettingsButton({ node }: { node: ApiTreeNode }) {
   );
 }
 
-/** Flatten an API tree into every API/folder path (e.g. 'default', 'billing', 'billing/charges'). */
-function flattenLocations(tree: ApiTreeNode[]): string[] {
-  const paths: string[] = [];
-  const walk = (node: ApiTreeNode, prefix: string) => {
-    const path = prefix ? `${prefix}/${node.name}` : node.name;
-    paths.push(path);
-    for (const folder of node.folders) walk(folder, path);
-  };
-  for (const api of tree) walk(api, '');
-  return paths;
-}
-
 function TreeNode({
   node,
   keyPath,
@@ -345,8 +331,10 @@ function TreeNode({
 export function Sidebar() {
   const workflows = useBuilderStore((s) => s.workflows);
   const toggleSidebar = useBuilderStore((s) => s.toggleSidebar);
+  // The create modal itself is hosted once in App (CreateModalHost) — the
+  // sidebar only asks the store to open it, so it works with the sidebar closed.
+  const setCreateModal = useBuilderStore((s) => s.setCreateModal);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [createState, setCreateState] = useState<CreateModalState | null>(null);
 
   const tree = useMemo(
     () =>
@@ -360,8 +348,6 @@ export function Sidebar() {
       ),
     [workflows],
   );
-
-  const locations = useMemo(() => flattenLocations(tree), [tree]);
 
   const toggle = (key: string) => {
     setCollapsed((prev) => {
@@ -384,7 +370,7 @@ export function Sidebar() {
             size="xs"
             aria-label="New operation"
             title="New operation"
-            onClick={() => setCreateState({ mode: 'operation' })}
+            onClick={() => setCreateModal({ mode: 'operation' })}
             className="text-muted-foreground hover:text-foreground"
           >
             <PlusIcon />
@@ -411,7 +397,7 @@ export function Sidebar() {
             isApi
             collapsed={collapsed}
             toggle={toggle}
-            onAddOperation={(location) => setCreateState({ mode: 'operation', location })}
+            onAddOperation={(location) => setCreateModal({ mode: 'operation', location })}
           />
         ))}
       </nav>
@@ -420,17 +406,11 @@ export function Sidebar() {
           variant="secondary"
           size="sm"
           className="w-full"
-          onClick={() => setCreateState({ mode: 'api' })}
+          onClick={() => setCreateModal({ mode: 'api' })}
         >
           <PlusIcon /> New API
         </Button>
       </div>
-
-      <CreateModal
-        state={createState}
-        onOpenChange={(open) => !open && setCreateState(null)}
-        locations={locations}
-      />
     </aside>
   );
 }

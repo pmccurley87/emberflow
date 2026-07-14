@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { changedFiles, diffSince, isGitRepo, revert as gitRevert, snapshot, type GitSnapshot } from './gitScope';
-import { buildPrompt, type AgentIntent, type AvailableNode } from './prompt';
+import { buildPrompt, type AgentIntent, type AvailableNode, type GuidedSetupState } from './prompt';
 import type { InfrastructureManifest } from '../infrastructure';
 import { spawnCodex, type SpawnedAgent } from './codexAdapter';
 import { spawnClaude } from './claudeAdapter';
@@ -103,6 +103,12 @@ export class AgentRunManager {
      * so agents REUSE known infrastructure instead of inventing parallel config.
      */
     private readonly infrastructure: () => InfrastructureManifest | null = () => null,
+    /**
+     * Getter for the runner-verified setup snapshot injected into guided-setup
+     * prompts as KNOWN state — so the agent doesn't burn its first turn
+     * re-deriving facts (git? skills? envs? ops?) the server already computed.
+     */
+    private readonly guidedState: () => GuidedSetupState | null = () => null,
   ) {}
 
   /** Validates the project + flow, snapshots git, spawns the adapter, and returns the new run's id. */
@@ -177,6 +183,7 @@ export class AgentRunManager {
       this.availableNodes(),
       this.projectLanguage,
       this.infrastructure(),
+      intent.action === 'guided-setup' ? this.guidedState() : null,
     );
     // Env override wins (tests stub agents this way); otherwise use the NEWEST
     // binary detection found across PATH + known install locations — a PATH

@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { CheckIcon, ChevronUpIcon, ListChecksIcon, Loader2Icon, ServerIcon, ShieldIcon } from 'lucide-react';
+import { CheckIcon, ChevronUpIcon, DownloadIcon, ListChecksIcon, Loader2Icon, ServerIcon, ShieldIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useBuilderStore } from '../store/builderStore';
 import { setupProgress } from '../store/setupClient';
 import { fetchInfrastructure, type InfrastructureResponse } from '../store/infraClient';
+import { fetchUpdateStatus, postUpdate, type UpdateStatus } from '../store/updateClient';
 import { InfrastructureDialog } from './InfrastructureDialog';
+import { CopyCommand } from './WelcomeDialog';
 import type { EnvironmentSummary } from '../store/serverRunner';
 import type { WorkflowRun } from '../engine';
 
@@ -119,6 +121,100 @@ function EnvAuthBadge({ env }: { env: EnvironmentSummary }) {
 }
 
 /**
+ * Package update chip: rendered only when the runner reports a newer published
+ * version. Highlight/ember tint (not warn) — an update is good news, not a
+ * problem. The popover walks the whole one-click flow: install → restart
+ * command on success, manual npm command on failure. Props-driven (the bar
+ * owns the fetch) so the component test can render it directly.
+ */
+export function UpdateChip({ status }: { status: UpdateStatus | null }) {
+  const [open, setOpen] = useState(false);
+  const [phase, setPhase] = useState<'idle' | 'installing' | 'done' | 'error'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  if (!status?.updateAvailable || !status.latest) return null;
+
+  const onInstall = async () => {
+    setPhase('installing');
+    setError(null);
+    const result = await postUpdate();
+    if (result.ok) {
+      setPhase('done');
+    } else {
+      setError(result.error ?? 'Install failed');
+      setPhase('error');
+    }
+  };
+
+  return (
+    <>
+      <Divider />
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            title={`Update available — ${status.current} → ${status.latest}`}
+            className={cn(segment, interactive, 'bg-highlight/15 font-medium text-highlight')}
+          >
+            <DownloadIcon className="size-3 shrink-0" />
+            update
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="top" align="start" className="w-72 p-3">
+          <div className="flex items-center gap-2">
+            <span className="size-1.5 shrink-0 rounded-full bg-highlight" />
+            <span className="text-[12px] font-medium">
+              Update available — {status.current} → {status.latest}
+            </span>
+          </div>
+          {phase === 'done' ? (
+            <>
+              <p className="mt-1.5 text-[11.5px] leading-snug text-muted-foreground">
+                Installed — restart the runner to finish:
+              </p>
+              <CopyCommand command="npx emberflow dev" />
+            </>
+          ) : (
+            <>
+              <p className="mt-1.5 text-[11.5px] leading-snug text-muted-foreground">
+                New features and fixes for the studio and runner.
+              </p>
+              {phase === 'error' && error && (
+                <>
+                  <p className="mt-1.5 truncate text-[11.5px] leading-snug text-destructive" title={error}>
+                    {error}
+                  </p>
+                  <p className="mt-1.5 text-[11.5px] leading-snug text-muted-foreground">
+                    Install manually instead:
+                  </p>
+                  <CopyCommand command="npm install @xdelivered/emberflow@latest" />
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => void onInstall()}
+                disabled={phase === 'installing'}
+                className="mt-2.5 flex items-center gap-1.5 rounded-md bg-highlight px-2.5 py-1 text-[11.5px] font-medium text-highlight-foreground transition-colors hover:bg-highlight/90 disabled:cursor-wait disabled:opacity-60"
+              >
+                {phase === 'installing' ? (
+                  <>
+                    <Loader2Icon className="size-3 shrink-0 animate-spin" />
+                    Installing…
+                  </>
+                ) : phase === 'error' ? (
+                  'Retry install'
+                ) : (
+                  'Install update'
+                )}
+              </button>
+            </>
+          )}
+        </PopoverContent>
+      </Popover>
+    </>
+  );
+}
+
+/**
  * Bottom status bar: a calm, always-present readout of where a run points and
  * what's happening. Left = environment / runner / workspace source (interactive
  * where it's safe to be); right = selection, flow shape and the live run.
@@ -147,6 +243,7 @@ export function StatusBar() {
   const [infraData, setInfraData] = useState<InfrastructureResponse | null>(null);
   const [infraOpen, setInfraOpen] = useState(false);
   const [registerOpen, setRegisterOpen] = useState(false);
+  const [mockOpen, setMockOpen] = useState(false);
   const agentRunStatus = agentRun?.status;
   useEffect(() => {
     if (agentRunStatus === 'running') return;
@@ -161,6 +258,19 @@ export function StatusBar() {
   // Scouted (present:true) → show the chip, even for a greenfield 0-item
   // manifest; only the not-scouted path is hidden (owned by the checklist).
   const infraCount = infraData && infraData.present ? infraData.manifest.items.length : null;
+
+  // Update notifier: one check per studio load — the runner caches the
+  // registry answer for an hour anyway, so polling would add nothing.
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void fetchUpdateStatus().then((s) => {
+      if (!cancelled) setUpdateStatus(s);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Setup entry point: a quiet progress chip while onboarding is unfinished.
   // Complete setups drop the chip — the checklist auto-open and this chip are
@@ -221,13 +331,44 @@ export function StatusBar() {
       {runnerMock && (
         <>
           <Divider />
-          <span
-            className={cn(segment, 'bg-warn/15 font-medium uppercase tracking-wide text-warn')}
-            title="The studio is in Mock mode — mounted endpoints answer with example responses from scenarios; nothing executes, no auth. Pick an environment in the toolbar dropdown to go live."
-          >
-            <span className="size-1.5 shrink-0 rounded-full bg-warn" />
-            mock
-          </span>
+          {/* Discrete explainer: mock is the mode every new project starts in,
+              so the chip opens a small card saying what it means and how to
+              leave it — a tooltip alone was too easy to never discover. */}
+          <Popover open={mockOpen} onOpenChange={setMockOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className={cn(segment, interactive, 'bg-warn/15 font-medium uppercase tracking-wide text-warn')}
+              >
+                <span className="size-1.5 shrink-0 rounded-full bg-warn" />
+                mock
+              </button>
+            </PopoverTrigger>
+            <PopoverContent side="top" align="start" className="w-72 p-3">
+              <div className="flex items-center gap-2">
+                <span className="size-1.5 shrink-0 rounded-full bg-warn" />
+                <span className="text-[12px] font-medium">Mock mode</span>
+              </div>
+              <p className="mt-1.5 text-[11.5px] leading-snug text-muted-foreground">
+                Runs answer with the example responses from your scenarios. Nothing real executes —
+                no databases, no external calls, no auth.
+              </p>
+              <p className="mt-1.5 text-[11.5px] leading-snug text-muted-foreground">
+                That makes it safe to run anything while you build. When you're ready, point runs at
+                a real environment.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setMockOpen(false);
+                  onEnvClick();
+                }}
+                className="mt-2.5 text-[11.5px] font-medium text-highlight underline-offset-2 hover:underline"
+              >
+                Go live — pick an environment
+              </button>
+            </PopoverContent>
+          </Popover>
         </>
       )}
       <Divider />
@@ -271,6 +412,7 @@ export function StatusBar() {
           </button>
         </>
       )}
+      <UpdateChip status={updateStatus} />
       {infraCount !== null && (
         <>
           <Divider />
@@ -291,7 +433,7 @@ export function StatusBar() {
         <PopoverTrigger asChild>
           <button
             type="button"
-            title="Runbook register — Simple reads outcomes; Technical adds type names + trace badges"
+            title="Detail level — Simple shows outcomes; Technical adds types and traces"
             className={cn(segment, interactive)}
           >
             <span className="truncate capitalize text-foreground/80">{register}</span>
