@@ -222,3 +222,24 @@ describe('composeAnsweredSubset', () => {
     expect(composeAnsweredSubset(QUESTIONS, {})).toBe('');
   });
 });
+
+describe('defers option field', () => {
+  it('keeps a non-empty defers string on an option, alongside action', () => {
+    const text =
+      'x\n```emberflow-questions\n{"questions":[{"id":"env","text":"Now?","options":[{"label":"Later","action":"submit","defers":"environments"}]}]}\n```';
+    const { questions } = extractGuidedQuestions(text);
+    expect(questions?.[0].options[0]).toEqual({
+      label: 'Later',
+      action: 'submit',
+      defers: 'environments',
+    });
+  });
+
+  it('drops empty/non-string defers', () => {
+    const text =
+      'x\n```emberflow-questions\n{"questions":[{"id":"env","text":"Now?","options":[{"label":"A","defers":"  "},{"label":"B","defers":7}]}]}\n```';
+    const { questions } = extractGuidedQuestions(text);
+    expect(questions?.[0].options[0]).toEqual({ label: 'A' });
+    expect(questions?.[0].options[1]).toEqual({ label: 'B' });
+  });
+});

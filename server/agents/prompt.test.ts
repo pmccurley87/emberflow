@@ -601,6 +601,15 @@ describe('buildPrompt', () => {
       expect(prompt).toMatch(/run NO commands and write NO files first/);
       expect(prompt).toMatch(/emberflow-questions/);
       expect(prompt).toMatch(/asks nothing has FAILED/i);
+      // Local-first: people build mock → local → dev/prod; local leads the
+      // options, is the proposed default, and a scouted localhost URL feeds it.
+      expect(prompt).toMatch(/LOCAL FIRST/);
+      // Mock-first frame: the greeting must say builds start on example data,
+      // and never assume dev/staging as the starting point.
+      expect(prompt).toMatch(/starts in MOCK mode/);
+      expect(prompt).toMatch(/mock → local → real environments/);
+      expect(prompt).toMatch(/local only \(add others later\)/);
+      expect(prompt).toMatch(/default to "local"/);
       // Terse-output contract + the closing first-build question with the
       // look-around escape hatch.
       expect(prompt).toMatch(/Be TERSE/);

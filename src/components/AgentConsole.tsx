@@ -22,7 +22,10 @@ const statusDot: Record<string, string> = {
  * the run finishes.
  */
 export function AgentConsole({ onDismiss }: { onDismiss: () => void }) {
-  const agentRun = useBuilderStore((s) => s.agentRun);
+  // Guided-setup runs are OWNED by the WelcomeDialog's embedded stream — this
+  // panel must not show their remnants (raw question blocks, and a Revert
+  // button aimed at the user's own setup files).
+  const agentRun = useBuilderStore((s) => (s.agentRun?.guided ? null : s.agentRun));
   const revertAgentRun = useBuilderStore((s) => s.revertAgentRun);
   const runAgent = useBuilderStore((s) => s.runAgent);
   const flowId = useBuilderStore((s) => s.flow.id);

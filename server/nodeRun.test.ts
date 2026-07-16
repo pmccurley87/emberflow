@@ -101,15 +101,16 @@ afterAll(() => {
 
 describe('POST /node-run', () => {
   it('runs a single built-in node in-process and returns its output + logs', async () => {
-    // CheckPlan is a pure built-in: input.user.plan -> { plan, features } + a log.
+    // Result is a CORE built-in (demo nodes don't reach project palettes):
+    // passes input through and logs.
     const { status, json } = await nodeRun({
-      type: 'CheckPlan',
-      input: { user: { plan: 'pro' } },
+      type: 'Result',
+      input: { data: { plan: 'pro' } },
     });
     expect(status).toBe(200);
-    expect(json.output).toEqual({ plan: 'pro', features: ['sso', 'audit-log', 'priority-support'] });
+    expect(json.output).toEqual({ data: { plan: 'pro' } });
     expect(json.error).toBeUndefined();
-    expect(json.logs.some((l: { message: string }) => l.message.includes('pro'))).toBe(true);
+    expect(json.logs.some((l: { message: string }) => l.message.includes('Result collected'))).toBe(true);
   });
 
   it('404s for an unknown node type', async () => {
@@ -125,8 +126,8 @@ describe('POST /node-run', () => {
 
   it('400s for an unknown environment', async () => {
     const { status, json } = await nodeRun({
-      type: 'CheckPlan',
-      input: { user: {} },
+      type: 'Result',
+      input: { data: {} },
       environment: 'ghost',
     });
     expect(status).toBe(400);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { DoneSummary, GuidedSetupIntro, GuidedSetupPanes, WelcomeChecklist } from './WelcomeDialog';
+import { DoneSummary, GuidedChecklistMap, GuidedSetupIntro, GuidedSetupPanes, WelcomeChecklist } from './WelcomeDialog';
 import type { WelcomeChecklistActions } from './WelcomeDialog';
 import type { SetupStatus } from '../store/setupClient';
 
@@ -84,11 +84,17 @@ describe('WelcomeChecklist', () => {
     expect(out).toContain('disabled');
   });
 
-  it('configured project: shows completed rows and agent versions', () => {
+  it('configured project: shows completed rows and only the CONFIRMED agent', () => {
     const out = html(CONFIGURED);
     expect(out).toContain('aria-label="done"');
+    // Without a choice, the first detected agent is the confirmed one — the
+    // second CLI is not listed (it lives in the picker / Settings).
     expect(out).toContain('claude 2.1.0');
-    expect(out).toContain('codex 0.5.3');
+    expect(out).not.toContain('codex 0.5.3');
+    // An explicit choice swaps the shown agent.
+    const chosen = renderToStaticMarkup(<WelcomeChecklist status={CONFIGURED} chosenAgent="codex" />);
+    expect(chosen).toContain('codex 0.5.3');
+    expect(chosen).not.toContain('claude 2.1.0');
     expect(out).toContain('2 environments, 1 protected');
     // Skills present → no install hint.
     expect(out).not.toContain('npx emberflow init');
@@ -231,9 +237,12 @@ describe('GuidedSetupPanes (running/done phase)', () => {
         followUpRef={{ current: null }}
       />,
     );
-    // Left: a checklist row title. Right: the stream prose + the running header.
+    // Left: a checklist row title. Right: the LATEST stream prose + the running
+    // header — the earlier message folds behind the disclosure (see fold tests).
     expect(out).toContain('Git repository');
-    expect(out).toContain('Reading the ground truth first.');
+    expect(out).toContain('Which environments do you want?');
+    expect(out).not.toContain('Reading the ground truth first.');
+    expect(out).toContain('Earlier setup activity (1 update)');
     expect(out).toContain('Setting things up…');
     // While the agent works, the left pane is a READ-ONLY progress map — the
     // interactive actions are exactly what the agent is doing, so no buttons.
@@ -474,5 +483,100 @@ describe('GuidedSetupPanes (running/done phase)', () => {
     );
     expect(out).toContain('build your first API');
     expect(out).not.toContain('Continue setup');
+  });
+
+  it('questions block: renders as a prominent ask-card with the ember header', () => {
+    const out = renderToStaticMarkup(
+      <GuidedSetupPanes
+        status={READY}
+        actions={NOOP}
+        events={questionStream}
+        running={false}
+        onFollowUp={() => {}}
+        onFinishComplete={() => {}}
+        onContinue={() => {}}
+        followUpRef={{ current: null }}
+      />,
+    );
+    // The ask is unmissable: labelled header + the highlight-card treatment,
+    // not a plain border-t strip.
+    expect(out).toContain('Your answer needed');
+    expect(out).toContain('border-highlight/40');
+    expect(out).toContain('bg-highlight/[0.07]');
+  });
+
+  it('fold: with 3+ messages, everything before the last folds behind the disclosure', () => {
+    const longStream = [
+      { type: 'message' as const, text: 'Reading the ground truth first.' },
+      { type: 'command' as const, command: 'ls', commandStatus: 'completed' as const },
+      { type: 'message' as const, text: 'Mapping your infrastructure now.' },
+      { type: 'message' as const, text: 'Environments written — one thing left.' },
+    ];
+    const out = renderToStaticMarkup(
+      <GuidedSetupPanes
+        status={READY}
+        actions={NOOP}
+        events={longStream}
+        running={true}
+        onFollowUp={() => {}}
+        onFinishComplete={() => {}}
+        onContinue={() => {}}
+        followUpRef={{ current: null }}
+      />,
+    );
+    // Only the tail (last message onward) renders by default.
+    expect(out).toContain('Environments written — one thing left.');
+    expect(out).not.toContain('Reading the ground truth first.');
+    expect(out).not.toContain('Mapping your infrastructure now.');
+    // The earlier activity is reachable behind the collapsed toggle, with a count.
+    expect(out).toContain('Earlier setup activity (3 updates)');
+    // The live working indicator survives the fold.
+    expect(out).toContain('Working…');
+  });
+
+  it('fold: fewer than 2 messages → no toggle, everything renders as before', () => {
+    const out = renderToStaticMarkup(
+      <GuidedSetupPanes
+        status={READY}
+        actions={NOOP}
+        events={[{ type: 'message' as const, text: 'Reading the ground truth first.' }]}
+        running={true}
+        onFollowUp={() => {}}
+        onFinishComplete={() => {}}
+        onContinue={() => {}}
+        followUpRef={{ current: null }}
+      />,
+    );
+    expect(out).toContain('Reading the ground truth first.');
+    expect(out).not.toContain('Earlier setup activity');
+  });
+});
+
+describe('environments deferred (status augmentation)', () => {
+  const deferredStatus: SetupStatus = {
+    ...READY,
+    environments: { ...READY.environments, deferred: true },
+  };
+
+  it('ticks the Environments row with the deferred detail and a quiet Set up link', () => {
+    const out = renderToStaticMarkup(<WelcomeChecklist status={deferredStatus} />);
+    expect(out).toContain('Deferred — set up when ready');
+    // Row is complete → progress counts it.
+    expect(out).toContain('3 of 6 steps done'); // READY has skills uninstalled
+  });
+
+  it('drops the environments step from the guided plan when deferred', () => {
+    const out = renderToStaticMarkup(<GuidedSetupIntro status={deferredStatus} onStart={() => {}} />);
+    expect(out).not.toContain('Set up environments');
+  });
+});
+
+describe('GuidedChecklistMap staggered reveal', () => {
+  it('completed glyphs mount hidden with per-row transition delays (revealed by effect)', () => {
+    const out = renderToStaticMarkup(<GuidedChecklistMap status={READY} />);
+    // Effects never run under static markup → initial (pre-reveal) state.
+    expect(out).toContain('scale-50 opacity-0');
+    expect(out).toContain('transition-delay:0ms');
+    expect(out).toContain('transition-delay:140ms');
   });
 });

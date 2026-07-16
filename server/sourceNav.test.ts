@@ -356,7 +356,7 @@ describe('regression: DeriveShipmentActuals → deriveTrackingActual (thin-adapt
     expect(node!.builtin).toBeUndefined();
 
     // Built-ins registered from the Emberflow package are outside regRoot.
-    const builtinNode = payload.nodes.find((n) => n.type === 'ValidateCredentials');
+    const builtinNode = payload.nodes.find((n) => n.type === 'Result');
     expect(builtinNode).toBeDefined();
     expect(builtinNode!.builtin).toBe(true);
     expect(builtinNode!.sourceRef).toBeUndefined();

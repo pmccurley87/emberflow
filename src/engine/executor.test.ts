@@ -852,11 +852,7 @@ describe('Subflow node', () => {
   // field so we can assert what the runner receives.
   const subflowRegistry = (): NodeRegistry => {
     const r = new NodeRegistry();
-    registerFlowControlNodes(r);
-    r.register(
-      { type: 'Result', label: 'Result', inputSchema: { fields: [{ name: 'data', type: 'object' }] } },
-      async (ctx) => ctx.input,
-    );
+    registerFlowControlNodes(r); // includes the core Result terminal
     return r;
   };
   const subflowFlow = (workflowId = 'child'): WorkflowDefinition =>

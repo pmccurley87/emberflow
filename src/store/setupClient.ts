@@ -22,6 +22,10 @@ export interface SetupStatus {
     count: number;
     protectedCount: number;
     anyAuthConfigured: boolean;
+    /** CLIENT-side augmentation (never sent by the runner): the user chose
+     *  "later" in guided setup, so the checklist row ticks as deferred
+     *  instead of looking blocked. Cleared once environments are configured. */
+    deferred?: boolean;
   };
   skills: { claude: boolean; codex: boolean };
   language: string;

@@ -26,6 +26,8 @@ import {
 } from '../lib/guidedQuestions';
 
 const WELCOME_DISMISSED_KEY = 'emberflow.welcome.dismissed';
+/** Set when the user chose "later" for environments in guided setup. */
+const ENV_DEFERRED_KEY = 'emberflow.environments.deferred';
 /** Re-run this exact command to (re)install the agent skills only. */
 const SKILLS_INSTALL_COMMAND = 'npx emberflow init --local --no-launch';
 /** Initialize a repo so agent changes can be snapshotted/reverted. */
@@ -196,13 +198,23 @@ interface ChecklistItem {
   extra?: 'skills-command' | 'manage-manually' | 'git-command';
 }
 
-/** Derive the checklist rows once — the dialog reuses this for its footer CTA. */
-export function deriveChecklist(status: SetupStatus, actions: WelcomeChecklistActions): ChecklistItem[] {
+/** Derive the checklist rows once — the dialog reuses this for its footer CTA.
+ *  `chosenAgent` names the CONFIRMED backend: the agent row's detail shows only
+ *  the one that will actually run (not every CLI detected) — the full choice
+ *  lives in the picker / Settings. */
+export function deriveChecklist(
+  status: SetupStatus,
+  actions: WelcomeChecklistActions,
+  chosenAgent?: AgentKind,
+): ChecklistItem[] {
   const { agents, git, environments, skills, ops, infrastructure } = status;
   const hasAgent = agents.length > 0;
   const hasGit = git.repo;
   const skillsInstalled = skills.claude || skills.codex;
-  const agentSummary = agents.map((a) => `${a.kind}${a.version ? ` ${a.version}` : ''}`).join(', ');
+  const activeAgent = agents.find((a) => a.kind === chosenAgent) ?? agents[0];
+  const agentSummary = activeAgent
+    ? `${activeAgent.kind}${activeAgent.version ? ` ${activeAgent.version}` : ''}`
+    : '';
 
   return [
     {
@@ -237,15 +249,18 @@ export function deriveChecklist(status: SetupStatus, actions: WelcomeChecklistAc
     },
     {
       key: 'environments',
-      status: environments.configured ? 'complete' : 'incomplete',
+      // A deliberate "later" in guided setup TICKS the row (deferred) — the
+      // user made a decision; an open circle would misread as blocked.
+      status: environments.configured || environments.deferred ? 'complete' : 'incomplete',
       title: 'Environments',
       detail:
         "You're in Mock — nothing real is touched. Point runs at real systems when you're ready.",
-      completedDetail:
-        `${environments.count} environment${environments.count === 1 ? '' : 's'}` +
-        (environments.protectedCount > 0 ? `, ${environments.protectedCount} protected` : ''),
-      actionLabel: environments.configured ? 'Manage' : 'Set up with AI',
-      actionSparkle: !environments.configured,
+      completedDetail: environments.configured
+        ? `${environments.count} environment${environments.count === 1 ? '' : 's'}` +
+          (environments.protectedCount > 0 ? `, ${environments.protectedCount} protected` : '')
+        : 'Deferred — set up when ready',
+      actionLabel: environments.configured ? 'Manage' : environments.deferred ? 'Set up' : 'Set up with AI',
+      actionSparkle: !environments.configured && !environments.deferred,
       // The "Set up with AI" action drives the coding agent, which needs both
       // an agent on PATH and a git repo to snapshot against — gate it the same
       // way scout is gated. Git is the earlier prerequisite, so its reason
@@ -253,7 +268,7 @@ export function deriveChecklist(status: SetupStatus, actions: WelcomeChecklistAc
       actionDisabled: !environments.configured && (!hasGit || !hasAgent),
       actionDisabledReason: !hasGit ? 'Initialize git first' : 'Detect a coding agent first',
       onAction: environments.configured ? actions.onOpenEnvironments : actions.onSetupEnvironments,
-      extra: environments.configured ? undefined : 'manage-manually',
+      extra: environments.configured || environments.deferred ? undefined : 'manage-manually',
     },
     // NOTE: secrets & auth deliberately have no checklist row — they only
     // matter once an operation touches real infrastructure, and they live in
@@ -340,7 +355,7 @@ export function WelcomeChecklist({
   /** The idle screen renders its own top-level progress bar — suppress this one there. */
   showProgress?: boolean;
 }) {
-  const items = deriveChecklist(status, actions);
+  const items = deriveChecklist(status, actions, chosenAgent);
   const done = items.filter((i) => i.status === 'complete').length;
   const nextIdx = nextStepIndex(items);
 
@@ -497,7 +512,8 @@ function guidedStartState(status: SetupStatus): {
 
   const remaining: string[] = [];
   if (!status.infrastructure.present) remaining.push('Scan your code for existing infrastructure');
-  if (!status.environments.configured) remaining.push('Set up environments — it asks you a few questions');
+  if (!status.environments.configured && !status.environments.deferred)
+    remaining.push('Set up environments — it asks you a few questions');
   if (!skillsInstalled) remaining.push('Install the agent skills');
   remaining.push('Verify the skills and its own connection');
 
@@ -587,10 +603,28 @@ export function GuidedSetupIntro({
  * (Set up with AI, Scout, …) are exactly what the agent is doing, and
  * clicking them mid-run would just collide with the single-flight run.
  */
-export function GuidedChecklistMap({ status, running }: { status: SetupStatus; running?: boolean }) {
-  const items = deriveChecklist(status, NOOP_ACTIONS);
+export function GuidedChecklistMap({
+  status,
+  running,
+  chosenAgent,
+}: {
+  status: SetupStatus;
+  running?: boolean;
+  chosenAgent?: AgentKind;
+}) {
+  const items = deriveChecklist(status, NOOP_ACTIONS, chosenAgent);
   const done = items.filter((i) => i.status === 'complete').length;
   const nextIdx = nextStepIndex(items);
+  // Entrance beat: rows already complete when the panes open tick in one after
+  // another (staggered scale/fade) — a quick "these are done, done, done" that
+  // earns the green block instead of it just sitting there. One-shot on mount;
+  // rows completing LIVE later render instantly (revealed stays true).
+  // prefers-reduced-motion: the transition is suppressed, checks just appear.
+  const [revealed, setRevealed] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setRevealed(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
   return (
     <div className="space-y-3">
       <Progress done={done} total={items.length} />
@@ -611,6 +645,16 @@ export function GuidedChecklistMap({ status, running }: { status: SetupStatus; r
                 className="mt-0.5 size-4 shrink-0 animate-spin text-highlight motion-reduce:animate-none"
                 aria-label="in progress"
               />
+            ) : item.status === 'complete' ? (
+              <span
+                className={cn(
+                  'transition-all duration-300 ease-out motion-reduce:transition-none',
+                  revealed ? 'scale-100 opacity-100' : 'scale-50 opacity-0',
+                )}
+                style={{ transitionDelay: `${i * 140}ms` }}
+              >
+                <StatusGlyph status="complete" />
+              </span>
             ) : (
               <StatusGlyph status={item.status} emphasized={i === nextIdx} />
             )}
@@ -640,8 +684,8 @@ export function GuidedChecklistMap({ status, running }: { status: SetupStatus; r
 
 /** One dim line acknowledging what's already in place — proof of progress
  *  without a row (and a button) per item. */
-export function DoneSummary({ status }: { status: SetupStatus }) {
-  const items = deriveChecklist(status, NOOP_ACTIONS).filter((i) => i.status === 'complete');
+export function DoneSummary({ status, chosenAgent }: { status: SetupStatus; chosenAgent?: AgentKind }) {
+  const items = deriveChecklist(status, NOOP_ACTIONS, chosenAgent).filter((i) => i.status === 'complete');
   if (items.length === 0) return null;
   return (
     <div className="flex items-center gap-2 px-0.5 text-[11px] text-muted-foreground">
@@ -722,12 +766,15 @@ function GuidedQuestionForm({
   onSubmit,
   onFinish,
   onBuild,
+  onDefer,
   onTypeInstead,
 }: {
   questions: GuidedQuestion[];
   onSubmit: (composed: string) => void;
   onFinish: () => void;
   onBuild: (text: string) => void;
+  /** A chosen option carried `defers: <topic>` — tick that checklist topic. */
+  onDefer?: (topic: string) => void;
   onTypeInstead: () => void;
 }) {
   const [answers, setAnswers] = useState<GuidedAnswers>({});
@@ -745,8 +792,29 @@ function GuidedQuestionForm({
     else if (outcome.kind === 'build') onBuild(outcome.text);
     else if (outcome.kind === 'send') onSubmit(outcome.text);
   };
+  // The form sits at the bottom of a busy scrolling column — pull it into view
+  // whenever a (new) set of questions appears so the ask is never missed.
+  // (Effects don't run under renderToStaticMarkup; ref + method are guarded.)
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    cardRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [questions]);
   return (
-    <div className="shrink-0 space-y-3 border-t border-border/70 p-3.5">
+    <div
+      ref={cardRef}
+      className="m-2.5 shrink-0 space-y-3 rounded-md border border-highlight/40 bg-highlight/[0.07] p-3.5"
+    >
+      {/* Unmistakable ask: ember dot + label, the same treatment as the guided
+          intro card — this is a question, not more stream chrome. */}
+      <div className="flex items-center gap-2">
+        <span
+          className="size-2 rounded-full bg-highlight animate-pulse motion-reduce:animate-none"
+          aria-hidden
+        />
+        <span className="text-[11px] font-medium uppercase tracking-wide text-highlight">
+          Your answer needed
+        </span>
+      </div>
       <div className="flex items-baseline justify-between gap-3">
         <div className="text-[13.5px] font-medium leading-snug">{q.text}</div>
         {questions.length > 1 && (
@@ -769,16 +837,21 @@ function GuidedQuestionForm({
               onClick={() => {
                 const next: GuidedAnswers = { ...answers, [q.id]: { option: opt } };
                 setAnswers(next);
+                // A deferring option ticks its checklist topic client-side.
+                if (opt.defers) onDefer?.(opt.defers);
                 // A 'submit' option sends IMMEDIATELY with whatever has been
                 // answered so far — a subset; unanswered questions are skipped.
                 if (opt.action === 'submit') onSubmit(composeAnsweredSubset(questions, next));
                 else if (!last) advance();
               }}
               className={cn(
-                'cursor-pointer rounded-md border px-3 py-1.5 text-[12.5px] transition-colors',
+                // On the ember-tinted ask-card, hairline borders wash out — the
+                // options need real button weight (solid surface + shadow, the
+                // app's outline-button vocabulary) to read as pressable.
+                'cursor-pointer rounded-md border px-3 py-1.5 text-[12.5px] shadow-sm transition-colors',
                 selected
-                  ? 'border-ring bg-secondary/60 font-medium text-foreground'
-                  : 'border-border text-foreground/80 hover:border-ring/50 hover:text-foreground',
+                  ? 'border-ring bg-secondary font-medium text-foreground'
+                  : 'border-border bg-card text-foreground hover:border-ring/60 hover:bg-secondary/60',
               )}
             >
               {opt.label}
@@ -804,7 +877,12 @@ function GuidedQuestionForm({
             }}
             placeholder="Or type your own…"
             aria-label={`${q.text} — other`}
-            className="min-w-0 flex-1 rounded-md border border-input bg-input/30 px-2.5 py-1.5 text-[12.5px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            className={cn(
+              // A visibly RECESSED well (darker than the tinted card, inset
+              // shadow) so it reads as "type here", distinct from the raised
+              // option buttons above it.
+              'min-w-0 flex-1 rounded-md border border-input bg-background/60 px-2.5 py-1.5 text-[12.5px] text-foreground shadow-inner outline-none transition-colors placeholder:italic placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
+            )}
           />
           {!last && (answer?.text ?? '').trim() !== '' && (
             <Button size="sm" variant="outline" onClick={advance}>
@@ -827,7 +905,7 @@ function GuidedQuestionForm({
           <button
             type="button"
             onClick={onTypeInstead}
-            className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
           >
             Type a reply instead
           </button>
@@ -851,12 +929,14 @@ function GuidedQuestionForm({
 export function GuidedSetupPanes({
   status,
   actions,
+  chosenAgent,
   events,
   running,
   failed,
   onFollowUp,
   onFinishComplete,
   onBuildFirst,
+  onDefer,
   onContinue,
   onRetry,
   retryAgent,
@@ -866,6 +946,8 @@ export function GuidedSetupPanes({
 }: {
   status: SetupStatus | null;
   actions: WelcomeChecklistActions;
+  /** The confirmed backend — the checklist's agent row shows only this one. */
+  chosenAgent?: AgentKind;
   events: React.ComponentProps<typeof AgentStream>['events'];
   running: boolean;
   /** The guided run ended on an error event (agent crashed / model rejected). */
@@ -876,6 +958,8 @@ export function GuidedSetupPanes({
    *  open the real build flow pre-filled instead of sending a continuation.
    *  Falls back to `onFollowUp` (send) when not provided. */
   onBuildFirst?: (text: string) => void;
+  /** A chosen question option carried `defers: <topic>`. */
+  onDefer?: (topic: string) => void;
   onContinue: () => void;
   /** Re-kick the guided run after a failure. */
   onRetry?: () => void;
@@ -913,6 +997,23 @@ export function GuidedSetupPanes({
   const [typedReply, setTypedReply] = useState(false);
   useEffect(() => setTypedReply(false), [questions]);
 
+  // Declutter: only the TAIL of the stream — the LAST agent message onward
+  // (plus any trailing commands/errors) — renders by default; everything
+  // before it folds behind a quiet "Earlier setup activity" disclosure. The
+  // open state is keyed by the fold boundary, so a NEW agent message
+  // re-collapses the history automatically. Fewer than two messages → no fold.
+  // (⚠-prefixed diagnostics are noise, not prose — they never anchor the fold.)
+  const foldIdx = useMemo(() => {
+    const msgIdxs = displayEvents
+      .map((e, i) => (e.type === 'message' && !(e.text ?? '').startsWith('⚠') ? i : -1))
+      .filter((i) => i >= 0);
+    return msgIdxs.length >= 2 ? msgIdxs[msgIdxs.length - 1] : -1;
+  }, [displayEvents]);
+  const [expandedAt, setExpandedAt] = useState(-1);
+  const foldOpen = foldIdx !== -1 && expandedAt === foldIdx;
+  const earlierEvents = foldIdx === -1 ? [] : displayEvents.slice(0, foldIdx);
+  const tailEvents = foldIdx === -1 ? displayEvents : displayEvents.slice(foldIdx);
+
   const showForm = !running && !failed && questions !== null && !typedReply;
   const headerText = running
     ? 'Setting things up…'
@@ -925,7 +1026,7 @@ export function GuidedSetupPanes({
     <div className="grid min-h-0 grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
       <div className="min-h-0 overflow-y-auto">
         {status ? (
-          <GuidedChecklistMap status={status} running={running} />
+          <GuidedChecklistMap status={status} running={running} chosenAgent={chosenAgent} />
         ) : (
           <div className="py-6 text-center text-[12px] text-muted-foreground">Checking your project…</div>
         )}
@@ -942,7 +1043,20 @@ export function GuidedSetupPanes({
         </div>
         <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 py-2.5 text-[12px]">
           {notice && <div className="text-[11px] text-highlight/90">{notice}</div>}
-          <AgentStream events={displayEvents} running={running} />
+          {foldIdx !== -1 && (
+            <button
+              type="button"
+              aria-expanded={foldOpen}
+              onClick={() => setExpandedAt(foldOpen ? -1 : foldIdx)}
+              className="block text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {foldOpen
+                ? '▾ Earlier setup activity'
+                : `▸ Earlier setup activity (${earlierEvents.length} update${earlierEvents.length === 1 ? '' : 's'})`}
+            </button>
+          )}
+          {foldOpen && <AgentStream events={earlierEvents} running={false} />}
+          <AgentStream events={tailEvents} running={running} />
         </div>
         {showForm && questions ? (
           <GuidedQuestionForm
@@ -950,6 +1064,7 @@ export function GuidedSetupPanes({
             onSubmit={onFollowUp}
             onFinish={onFinishComplete}
             onBuild={onBuildFirst ?? onFollowUp}
+            onDefer={onDefer}
             onTypeInstead={() => setTypedReply(true)}
           />
         ) : (
@@ -1031,6 +1146,29 @@ export function WelcomeDialog() {
   const [manualOpen, setManualOpen] = useState(false);
   const followUpRef = useRef<HTMLTextAreaElement | null>(null);
 
+  // "Later" in the guided interview DEFERS environments: the checklist row
+  // ticks (deferred, not blocked). Persisted so a reload doesn't un-decide it;
+  // cleared automatically once environments are actually configured.
+  const [envDeferred, setEnvDeferred] = useState(
+    () => typeof localStorage !== 'undefined' && localStorage.getItem(ENV_DEFERRED_KEY) === '1',
+  );
+  const deferTopic = (topic: string) => {
+    if (topic !== 'environments') return;
+    setEnvDeferred(true);
+    if (typeof localStorage !== 'undefined') localStorage.setItem(ENV_DEFERRED_KEY, '1');
+  };
+  useEffect(() => {
+    if (status?.environments.configured && envDeferred) {
+      setEnvDeferred(false);
+      if (typeof localStorage !== 'undefined') localStorage.removeItem(ENV_DEFERRED_KEY);
+    }
+  }, [status?.environments.configured, envDeferred]);
+  // Every checklist consumer below reads the AUGMENTED status.
+  const effectiveStatus: SetupStatus | null =
+    status && envDeferred && !status.environments.configured
+      ? { ...status, environments: { ...status.environments, deferred: true } }
+      : status;
+
   // Guided phase: derived from the single agentRun slot. `guided` marks the run
   // this dialog owns, so closing + reopening re-attaches to the same stream.
   const guidedRun = agentRun?.guided ? agentRun : null;
@@ -1072,6 +1210,18 @@ export function WelcomeDialog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [guidedStatus, retryAgent]);
 
+  // While the guided run is live, poll the checklist every few seconds: the
+  // agent writes ground-truth files mid-turn (emberflow.environments.json, the
+  // scout output), so the left map should tick rows green AS they land, not
+  // only when the run ends. deriveChecklist recomputes per render and the
+  // spinner already sits on the next incomplete row, so a refetch is all it
+  // takes. (Interval effect — not covered by the static-markup tests.)
+  useEffect(() => {
+    if (phase !== 'running') return;
+    const id = setInterval(() => void refreshSetupStatus(), 4000);
+    return () => clearInterval(id);
+  }, [phase, refreshSetupStatus]);
+
   // Refetch the checklist when the guided run finishes (a completed run may have
   // scouted, installed skills, or written environments) — mirrors the
   // agentRunStatus subscription StatusBar/InfraTab use.
@@ -1097,6 +1247,20 @@ export function WelcomeDialog() {
     // Mount-only: auto-open is a one-shot boot decision.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Opening the dialog must land on the IDLE intro (Start setup) unless the
+  // guided run is live or still waiting on an answer — auto-resuming a stale
+  // finished stream read as "it started by itself". Pending questions in the
+  // last message keep the two-pane so the interview can be answered.
+  const resetGuidedSetup = useBuilderStore((s) => s.resetGuidedSetup);
+  useEffect(() => {
+    if (!welcomeOpen || !guidedRun || guidedRun.status === 'running') return;
+    const lastMsg = [...guidedRun.events].reverse().find((e) => e.type === 'message');
+    const pending = lastMsg?.text ? extractGuidedQuestions(lastMsg.text).questions : null;
+    if (!pending) resetGuidedSetup();
+    // Run only on open transitions — the run object identity churns per event.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [welcomeOpen]);
 
   // Refresh the rows every time the dialog opens (e.g. from the StatusBar chip).
   useEffect(() => {
@@ -1145,8 +1309,9 @@ export function WelcomeDialog() {
           </DialogDescription>
           {twoPane ? (
             <GuidedSetupPanes
-              status={status}
+              status={effectiveStatus}
               actions={actions}
+              chosenAgent={agentChoice.agent}
               events={[...guidedTranscript, ...(guidedRun?.events ?? [])]}
               running={phase === 'running'}
               failed={guidedRun?.status === 'error'}
@@ -1157,6 +1322,7 @@ export function WelcomeDialog() {
                 beginGuidedSetup();
               }}
               notice={autoSwitchNotice ?? undefined}
+              onDefer={deferTopic}
               onFollowUp={(text) => beginGuidedSetup(text)}
               onFinishComplete={() => {
                 // One door: setup ends in the create modal, not the agent panel.
@@ -1174,26 +1340,26 @@ export function WelcomeDialog() {
             />
           ) : (
             <>
-              {status ? (
+              {effectiveStatus ? (
                 <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
                   {/* One story: progress → the guided plan → what's done → a
                       quiet manual fallback. The full checklist (with its many
                       buttons) stays behind the disclosure so the idle screen
                       has a single primary action. */}
                   <Progress
-                    done={deriveChecklist(status, actions).filter((i) => i.status === 'complete').length}
-                    total={deriveChecklist(status, actions).length}
+                    done={deriveChecklist(effectiveStatus, actions).filter((i) => i.status === 'complete').length}
+                    total={deriveChecklist(effectiveStatus, actions).length}
                   />
                   <GuidedSetupIntro
-                    status={status}
+                    status={effectiveStatus}
                     chosenAgent={agentChoice.agent}
                     onChooseAgent={(kind) => setAgentChoice({ ...agentChoice, agent: kind })}
                     onStart={() => beginGuidedSetup()}
                   />
-                  <DoneSummary status={status} />
+                  <DoneSummary status={effectiveStatus} chosenAgent={agentChoice.agent} />
                   {manualOpen && (
                     <WelcomeChecklist
-                      status={status}
+                      status={effectiveStatus}
                       actions={actions}
                       chosenAgent={agentChoice.agent}
                       onChooseAgent={(kind) => setAgentChoice({ ...agentChoice, agent: kind })}
@@ -1207,7 +1373,7 @@ export function WelcomeDialog() {
                 </div>
               )}
               <WelcomeFooter
-                status={status}
+                status={effectiveStatus}
                 actions={actions}
                 onDismiss={dismiss}
                 manualOpen={manualOpen}

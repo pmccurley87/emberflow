@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, copyFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, extname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { detectHarnesses, resolveSkillDirs } from './skillTargets';
 
@@ -163,6 +163,46 @@ function isInsideGitRepo(cwd: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** File extensions that mark a directory as "an existing project" for the
+ *  greenfield-target guard. Deliberately broad across languages — the scout
+ *  scans any codebase, not just JS/TS. */
+const SOURCE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs',
+  '.py', '.go', '.rb', '.rs', '.java', '.kt', '.php', '.cs', '.swift',
+]);
+
+/**
+ * Greenfield-target guard: does `cwd` look like an EMPTY directory rather than
+ * an existing app repo? True when it is not inside a git repo AND holds no
+ * source files (shallow bounded walk; node_modules/.git/emberflow scaffold and
+ * emberflow.config.* are ignored). Users who meant to install into their app —
+ * so the infrastructure scout has real code to scan — otherwise don't notice
+ * until the scout reports "0 items found".
+ */
+export function looksLikeEmptyTarget(cwd: string, maxDepth = 3): boolean {
+  if (isInsideGitRepo(cwd)) return false;
+  const skipDirs = new Set(['node_modules', '.git', 'emberflow', 'dist', 'build']);
+  const hasSource = (dir: string, depth: number): boolean => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (depth >= maxDepth || skipDirs.has(entry.name) || entry.name.startsWith('.')) continue;
+        if (hasSource(join(dir, entry.name), depth + 1)) return true;
+      } else if (entry.isFile()) {
+        if (entry.name.startsWith('emberflow.config.')) continue;
+        if (SOURCE_EXTENSIONS.has(extname(entry.name))) return true;
+      }
+    }
+    return false;
+  };
+  return !hasSource(cwd, 0);
 }
 
 /**

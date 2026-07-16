@@ -18,6 +18,8 @@ export interface ParsedArgs {
   mock?: boolean;
   js?: boolean;
   ts?: boolean;
+  /** Skip the greenfield-target confirmation (`--yes` / `--force`). */
+  yes?: boolean;
   rest: string[];
 }
 
@@ -47,6 +49,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     else if (a === '--mock') out.mock = true;
     else if (a === '--js') out.js = true;
     else if (a === '--ts') out.ts = true;
+    else if (a === '--yes' || a === '--force') out.yes = true;
     else out.rest.push(a);
   }
   return out;
@@ -249,7 +252,39 @@ export async function runCommand(p: ParsedArgs, ctx: RuntimeContext = defaultCtx
             }
           ) => Promise<number>;
           tsxResolvable: (cwd: string) => boolean;
+          looksLikeEmptyTarget: (cwd: string) => boolean;
         };
+
+        // Greenfield-target guard: an empty non-repo directory usually means the
+        // user meant to install into their EXISTING app repo (the infrastructure
+        // scout needs real code to scan) — not a sandbox that silently becomes a
+        // new repo. Require explicit consent before scaffolding one.
+        if (!p.yes && mod.looksLikeEmptyTarget(process.cwd())) {
+          const hint =
+            '[emberflow] aborted. Run init from your app\'s repo root, or pass --yes to scaffold a brand-new project here (EMBERFLOW_PROJECT=/path/to/repo also works).';
+          if (!process.stdin.isTTY) {
+            console.error(
+              '[emberflow] this directory has no git repo and no source files — it looks empty, not an existing project. Non-interactive run: pass --yes to proceed.'
+            );
+            console.error(hint);
+            return 1;
+          }
+          const proceed = await new Promise<boolean>((resolvePrompt) => {
+            const rl = createInterface({ input: process.stdin, output: process.stdout });
+            rl.question(
+              "This directory has no git repo and no source files — it looks empty, not an existing project.\nEmberflow's infrastructure scout works best at your app's repo root.\nInstall here anyway? [y/N] ",
+              (answer) => {
+                rl.close();
+                resolvePrompt(/^y(es)?$/i.test(answer.trim()));
+              }
+            );
+          });
+          if (!proceed) {
+            console.error(hint);
+            return 1;
+          }
+        }
+
         const scope = p.scope ?? (await promptScope());
         const language = p.js ? 'javascript' : p.ts ? 'typescript' : await promptLanguage();
         const git = !p.noGit;
@@ -301,7 +336,7 @@ export async function runCommand(p: ParsedArgs, ctx: RuntimeContext = defaultCtx
     }
     default:
       console.log(
-        'Usage: emberflow <dev|serve|mcp|init|run|test|doctor|list-nodes|node-schema|list-workflows|get-workflow|list-environments|login-environment|set-environment-auth|serving|validate|publish|save|create|delete|rename|samples> [--port N] [--project DIR] [--scenario NAME] [--no-skills] [--global|--local] [--no-launch] [--no-git] [--mock] [--js|--ts]\n' +
+        'Usage: emberflow <dev|serve|mcp|init|run|test|doctor|list-nodes|node-schema|list-workflows|get-workflow|list-environments|login-environment|set-environment-auth|serving|validate|publish|save|create|delete|rename|samples> [--port N] [--project DIR] [--scenario NAME] [--no-skills] [--global|--local] [--no-launch] [--no-git] [--mock] [--js|--ts] [--yes]\n' +
           '  test [opId] [--environment NAME] [--json]   Run scenario expectations in-process (no runner) — exit 0/1/2\n' +
           '  doctor [opId] [--fix]                       Diagnose operation(s) in-process (no runner); --fix seeds param defaults — exit 0/1/2'
       );

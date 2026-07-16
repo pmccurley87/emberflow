@@ -5,10 +5,10 @@ import { createLoginFlow } from '../flows/login-flow';
 import { startRun } from '../engine';
 
 describe('login example', () => {
-  it('registers the five login nodes', () => {
+  it('registers the four login demo nodes (Result moved to flow-control)', () => {
     const types = createLoginRegistry(0).list().map((d) => d.type);
     expect(types).toEqual(
-      expect.arrayContaining(['ValidateCredentials', 'FetchUser', 'CheckPlan', 'IssueToken', 'Result']),
+      expect.arrayContaining(['ValidateCredentials', 'FetchUser', 'CheckPlan', 'IssueToken']),
     );
   });
 

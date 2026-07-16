@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadProjectConfig } from './projectConfig';
 import { buildRegistries, buildFlowStore, buildApiStore, requireProjectWhenExplicit } from './projectMode';
@@ -85,6 +85,32 @@ describe('project mode wiring', () => {
     expect(validation.has('Input')).toBe(true);
     expect(execution.has('Input')).toBe(true);
     expect(execution.has('Shout')).toBe(false);
+  });
+});
+
+describe('project-mode node palette', () => {
+  it('consumer projects get CORE nodes only — no demo domain nodes', async () => {
+    const project = await loadProjectConfig(resolve(__dirname, '../examples/demo-project'));
+    const { validation } = buildRegistries(project);
+    const types = validation.list().map((d) => d.type);
+    // Core control flow + HTTP surface stay.
+    expect(types).toContain('Conditional');
+    expect(types).toContain('Response');
+    expect(types).toContain('requireAuth');
+    // Demo domain nodes (sandbox-only) must NOT reach a consumer palette.
+    expect(types.some((t) => /^Go[A-Z]/.test(t))).toBe(false);
+    expect(types).not.toContain('GeocodeCity');
+    expect(types).not.toContain('ValidateCredentials');
+  });
+
+  it('the no-project sandbox keeps the demo nodes (seeded flows need them)', () => {
+    const { validation } = buildRegistries(null);
+    const types = validation.list().map((d) => d.type);
+    // Demo registrars present (assert via nodes that exist in every build —
+    // some demo sets are private-repo-only and stripped from the OSS tree).
+    expect(types).toContain('ValidateCredentials');
+    expect(types).toContain('GeocodeCity');
+    expect(types.length).toBeGreaterThan(20);
   });
 });
 

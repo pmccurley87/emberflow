@@ -1,10 +1,10 @@
 // bin/init.test.ts
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runInit, tsxResolvable } from './init';
+import { looksLikeEmptyTarget, runInit, tsxResolvable } from './init';
 
 /** Run git in `dir`, returning trimmed stdout. Pins an identity so commits work
  *  on a machine/CI with no global git config. */
@@ -255,5 +255,72 @@ describe('tsxResolvable', () => {
     const d = scratch();
     writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'isolated' }));
     expect(tsxResolvable(d)).toBe(false);
+  });
+});
+
+describe('looksLikeEmptyTarget (greenfield-target guard)', () => {
+  it('true for an empty non-repo directory', () => {
+    expect(looksLikeEmptyTarget(scratch())).toBe(true);
+  });
+
+  it('false inside a git repo, even with no source files', () => {
+    const d = scratch();
+    git(d, ['init']);
+    expect(looksLikeEmptyTarget(d)).toBe(false);
+  });
+
+  it('false when source files exist (any supported language), no repo needed', () => {
+    const d = scratch();
+    writeFileSync(join(d, 'app.py'), 'print("hi")\n');
+    expect(looksLikeEmptyTarget(d)).toBe(false);
+  });
+
+  it('ignores emberflow.config.* and node_modules when judging emptiness', () => {
+    const d = scratch();
+    writeFileSync(join(d, 'emberflow.config.mjs'), 'export default {};\n');
+    mkdirSync(join(d, 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(join(d, 'node_modules', 'dep', 'index.js'), 'module.exports = {};\n');
+    expect(looksLikeEmptyTarget(d)).toBe(true);
+  });
+
+  it('finds nested source within the depth bound', () => {
+    const d = scratch();
+    mkdirSync(join(d, 'src', 'lib'), { recursive: true });
+    writeFileSync(join(d, 'src', 'lib', 'util.ts'), 'export const x = 1;\n');
+    expect(looksLikeEmptyTarget(d)).toBe(false);
+  });
+});
+
+describe('init greenfield guard (runCommand)', () => {
+  it('empty non-repo dir without --yes aborts (non-TTY) and scaffolds nothing', async () => {
+    const d = scratch();
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(d);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { runCommand, parseArgs } = await import('./commands');
+      const code = await runCommand(parseArgs(['init', '--no-launch', '--js', '--local']));
+      expect(code).toBe(1);
+      expect(existsSync(join(d, 'emberflow.config.mjs'))).toBe(false);
+      expect(existsSync(join(d, '.git'))).toBe(false);
+      const all = errSpy.mock.calls.flat().join('\n');
+      expect(all).toMatch(/looks empty, not an existing project/);
+      expect(all).toMatch(/--yes/);
+    } finally {
+      cwdSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+
+  it('with --yes it proceeds and scaffolds', async () => {
+    const d = scratch();
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(d);
+    try {
+      const { runCommand, parseArgs } = await import('./commands');
+      const code = await runCommand(parseArgs(['init', '--no-launch', '--js', '--local', '--yes']));
+      expect(code).toBe(0);
+      expect(existsSync(join(d, 'emberflow.config.mjs'))).toBe(true);
+    } finally {
+      cwdSpy.mockRestore();
+    }
   });
 });

@@ -163,11 +163,11 @@ if ( cd "$TMP_JS" && node -e "require.resolve('tsx')" ) 2>/dev/null; then
   fail "tsx IS resolvable from a JS consumer install — the optional-peer-dep move regressed"
 fi
 
-echo "[smoke][js] running emberflow init --js --local --no-launch..."
+echo "[smoke][js] running emberflow init --js --local --no-launch --yes..."
 # --no-launch: init otherwise launches `emberflow dev` itself and never returns.
 # --local: install skills into the repo (don't touch \$HOME). --js: scaffold the
 # plain-JS config explicitly rather than depend on the non-TTY default.
-(cd "$TMP_JS" && npx emberflow init --js --local --no-launch)
+(cd "$TMP_JS" && npx emberflow init --js --local --no-launch --yes)
 
 [[ -f "$TMP_JS/emberflow.config.mjs" ]] || fail "emberflow.config.mjs was not created"
 [[ ! -f "$TMP_JS/emberflow.config.ts" ]] || fail "unexpected emberflow.config.ts in the JS variant"
@@ -205,8 +205,8 @@ echo "[smoke][ts] asserting tsx IS resolvable now (the consumer installed it)...
 ( cd "$TMP_TS" && node -e "require.resolve('tsx')" ) 2>/dev/null \
   || fail "tsx should resolve after 'npm i -D tsx' but does not"
 
-echo "[smoke][ts] running emberflow init --ts --local --no-launch..."
-(cd "$TMP_TS" && npx emberflow init --ts --local --no-launch)
+echo "[smoke][ts] running emberflow init --ts --local --no-launch --yes..."
+(cd "$TMP_TS" && npx emberflow init --ts --local --no-launch --yes)
 
 [[ -f "$TMP_TS/emberflow.config.ts" ]] || fail "emberflow.config.ts was not created"
 [[ ! -f "$TMP_TS/emberflow.config.mjs" ]] || fail "unexpected emberflow.config.mjs in the TS variant"

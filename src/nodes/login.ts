@@ -163,27 +163,9 @@ export function createLoginRegistry(
     },
   );
 
-  registry.register(
-    {
-      type: 'Result',
-      label: 'Result',
-      description: 'Terminal node that passes its input through and displays it on the canvas.',
-      category: 'output',
-      traceKind: 'compute',
-      tags: ['display'],
-      inputSchema: {
-        fields: [{ name: 'data', type: 'object' }],
-      },
-      outputSchema: {
-        fields: [{ name: 'data', type: 'object' }],
-      },
-    },
-    async (ctx) => {
-      await sleep(delayMs);
-      ctx.log('info', 'Result collected');
-      return ctx.input;
-    },
-  );
+  // NOTE: the core `Result` terminal used to register here; it moved to
+  // flow-control.ts so consumer projects (which skip the demo registrars)
+  // still get it.
 
   return registry;
 }

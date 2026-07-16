@@ -362,6 +362,10 @@ interface BuilderState {
    *  environments. Marks the run `guided` so the dialog owns its stream and the
    *  right-hand console stays closed. */
   beginGuidedSetup(instruction?: string): void;
+  /** Discard a FINISHED guided run + transcript so the welcome dialog returns
+   *  to its idle intro (Start setup) instead of auto-resuming an old stream.
+   *  No-op while a guided run is live. */
+  resetGuidedSetup(): void;
   /**
    * The operation currently being scaffolded by the create flow. Its stub is
    * already selected; the canvas shows a "waiting for the agent" holding pattern
@@ -1312,6 +1316,15 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
         set({ guidedTranscript: [] });
       }
       void get().runAgent({ action: 'guided-setup', instruction: notes });
+    },
+
+    resetGuidedSetup() {
+      const run = get().agentRun;
+      if (run?.guided && run.status === 'running') return; // never kill a live run
+      set((s) => ({
+        guidedTranscript: [],
+        agentRun: s.agentRun?.guided ? null : s.agentRun,
+      }));
     },
 
     setWelcomeOpen(open) {

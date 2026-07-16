@@ -52,8 +52,13 @@ export function buildRegistries(project: ProjectConfig | null): {
   // Server-side registries capture registration provenance (file:line of each
   // register() call) so the studio can navigate to a node's real source.
   // Browser registries never enable this — see createDefaultRegistry.
-  const validation = createDefaultRegistry(undefined, { captureSourceRefs: true });
-  const execution = createDefaultRegistry(undefined, { captureSourceRefs: true });
+  // Consumer projects get CORE nodes only (control flow, Response,
+  // requireAuth) — the demo domain nodes (weather/anomaly/EV)
+  // exist for the no-project sandbox and would otherwise tempt agents into
+  // building real operations on demo infrastructure.
+  const includeDemoNodes = !project;
+  const validation = createDefaultRegistry(undefined, { captureSourceRefs: true, includeDemoNodes });
+  const execution = createDefaultRegistry(undefined, { captureSourceRefs: true, includeDemoNodes });
   if (project?.registerNodes) {
     project.registerNodes(validation);
     project.registerNodes(execution);

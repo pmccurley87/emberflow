@@ -68,6 +68,26 @@ function ruleMatches(op: string, input: unknown, comparand: unknown): boolean {
  * branch handles (edge.sourceHandle = branch name).
  */
 export function registerFlowControlNodes(registry: NodeRegistry): void {
+  // Core terminal (moved from the demo login module so consumer projects,
+  // which skip demo registrars, still have it): passes input through and
+  // displays it on the canvas.
+  registry.register(
+    {
+      type: 'Result',
+      label: 'Result',
+      description: 'Terminal node that passes its input through and displays it on the canvas.',
+      category: 'output',
+      traceKind: 'compute',
+      tags: ['display'],
+      inputSchema: { fields: [{ name: 'data', type: 'object' }] },
+      outputSchema: { fields: [{ name: 'data', type: 'object' }] },
+    },
+    async (ctx) => {
+      ctx.log('info', 'Result collected');
+      return ctx.input;
+    },
+  );
+
   registry.register(
     {
       type: 'Input',

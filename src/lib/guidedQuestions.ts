@@ -13,6 +13,10 @@ export interface GuidedQuestionOption {
    *  records the answer and immediately sends whatever has been answered so
    *  far (a subset — unanswered questions are simply skipped). */
   action?: 'finish' | 'submit';
+  /** Choosing this option DEFERS the named setup topic (e.g. 'environments'):
+   *  the studio ticks the matching checklist row as "deferred — set up when
+   *  ready" instead of leaving it looking blocked. */
+  defers?: string;
 }
 
 export interface GuidedQuestion {
@@ -33,9 +37,12 @@ const TRAILING_BLOCK = /```emberflow-questions[ \t]*\n([\s\S]*?)\n?```\s*$/;
 function normalizeOption(raw: unknown): GuidedQuestionOption | null {
   if (typeof raw === 'string') return { label: raw };
   if (raw && typeof raw === 'object' && typeof (raw as { label?: unknown }).label === 'string') {
-    const { label, action } = raw as { label: string; action?: unknown };
+    const { label, action, defers } = raw as { label: string; action?: unknown; defers?: unknown };
+    const out: GuidedQuestionOption = { label };
     // Unknown actions are dropped (the option stays clickable, just inert).
-    return action === 'finish' || action === 'submit' ? { label, action } : { label };
+    if (action === 'finish' || action === 'submit') out.action = action;
+    if (typeof defers === 'string' && defers.trim()) out.defers = defers.trim();
+    return out;
   }
   return null;
 }

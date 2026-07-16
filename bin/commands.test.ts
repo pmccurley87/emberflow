@@ -111,7 +111,7 @@ describe('runCommand init --ts auto-launch (stale vs fresh runtime decision)', (
     const origLog = console.log;
     console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
     try {
-      const code = await withCwd(d, () => runCommand(parseArgs(['init', '--ts', '--no-skills'])));
+      const code = await withCwd(d, () => runCommand(parseArgs(['init', '--ts', '--no-skills', '--yes'])));
       expect(code).toBe(0);
       expect(spawnCalls).toEqual([]); // no launch attempt at all
       const out = logs.join('\n');
@@ -136,7 +136,7 @@ describe('runCommand init --ts auto-launch (stale vs fresh runtime decision)', (
 
     await silenceLog(async () => {
       const code = await withCwd(projectDir, () =>
-        runCommand(parseArgs(['init', '--ts', '--no-skills']), staleCtx)
+        runCommand(parseArgs(['init', '--ts', '--no-skills', '--yes']), staleCtx)
       );
       expect(code).toBe(0);
     });

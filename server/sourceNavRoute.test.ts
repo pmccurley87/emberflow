@@ -97,7 +97,7 @@ describe('GET /nodes sourceRef wiring', () => {
     expect(project!.sourceRef).toEqual({ file: 'nodes.mjs', line: 4 });
     expect(project!.builtin).toBeUndefined();
 
-    const builtin = body.nodes.find((n) => n.type === 'ValidateCredentials');
+    const builtin = body.nodes.find((n) => n.type === 'Result');
     expect(builtin).toBeDefined();
     expect(builtin!.builtin).toBe(true);
     expect(builtin!.sourceRef).toBeUndefined();
