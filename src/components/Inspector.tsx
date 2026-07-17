@@ -737,6 +737,17 @@ function HttpSection() {
   );
 }
 
+/**
+ * Which register a node's Inputs/Outputs schema sections belong in. Simple
+ * reads as a story — description, then the last run's actual values — so
+ * schemas (declared shape, no run data yet) fold into the existing Details
+ * disclosure instead of competing at the top. Technical is unchanged: schemas
+ * stay in their own top-level Wiring & schema fold.
+ */
+export function inspectorSectionsFor(register: 'simple' | 'technical'): { schemasInDetails: boolean } {
+  return { schemasInDetails: register === 'simple' };
+}
+
 export function Inspector() {
   const flow = useBuilderStore((s) => s.flow);
   const registry = useBuilderStore((s) => s.registry);
@@ -810,6 +821,16 @@ export function Inspector() {
         : lastInfoOutcome(logs, node.id);
     const pinned = !!(node.metadata && 'pinnedOutput' in node.metadata);
     const plainDescription = simpleNodeDescription(definition);
+    const { schemasInDetails } = inspectorSectionsFor(register);
+
+    const inputVal = state?.input as Record<string, unknown> | undefined;
+    const hasInputVal = !!inputVal && Object.keys(inputVal).length > 0;
+    const inputShape = shapeFields(node, definition, 'input');
+
+    const hasExecOutputs = !!executions && executions.length > 1;
+    const hasOutputVal = !!outputValue && Object.keys(outputValue).length > 0;
+    const outputShape = shapeFields(node, definition, 'output');
+    const hasOutputData = hasExecOutputs || hasOutputVal || !!state?.error;
 
     return (
       <div className="p-4">
@@ -857,46 +878,36 @@ export function Inspector() {
           <p className="mb-3 text-[12px] leading-relaxed text-muted-foreground/80 italic">{outcome}</p>
         )}
 
-        {(() => {
-          const inputVal = state?.input as Record<string, unknown> | undefined;
-          const hasInputVal = !!inputVal && Object.keys(inputVal).length > 0;
-          const inputShape = shapeFields(node, definition, 'input');
-          // Nothing to say — no run value and no declared shape — so no section.
-          if (!hasInputVal && inputShape.length === 0) return null;
-          return (
-            <section className="mt-3 border-t border-border pt-3">
-              <SectionTitle>Inputs</SectionTitle>
-              {hasInputVal ? <KeyValueGrid value={inputVal} emptyLabel="" /> : <ShapeList fields={inputShape} />}
-            </section>
-          );
-        })()}
+        {/* The story: actual last-run values, promoted to the top. A bare
+            declared shape (nothing has run yet) is schema, not story — with
+            schemasInDetails it folds into Details below instead of competing
+            here (always true in this register; the section simply drops out
+            when there's no run value yet). */}
+        {hasInputVal && (
+          <section className="mt-3 border-t border-border pt-3">
+            <SectionTitle>Inputs</SectionTitle>
+            <KeyValueGrid value={inputVal} emptyLabel="" />
+          </section>
+        )}
 
-        {(() => {
-          const hasExecOutputs = !!executions && executions.length > 1;
-          const hasOutputVal = !!outputValue && Object.keys(outputValue).length > 0;
-          const outputShape = shapeFields(node, definition, 'output');
-          if (!hasExecOutputs && !hasOutputVal && !state?.error && outputShape.length === 0) return null;
-          return (
-            <section className="mt-4 border-t border-border pt-3">
-              <SectionTitle>Outputs</SectionTitle>
-              {hasExecOutputs ? (
-                <ExecutionPager executions={executions!}>
-                  {(record) => (
-                    <KeyValueGrid
-                      value={record.output as Record<string, unknown> | undefined}
-                      error={record.error}
-                      emptyLabel=""
-                    />
-                  )}
-                </ExecutionPager>
-              ) : hasOutputVal || state?.error ? (
-                <KeyValueGrid value={outputValue} error={state?.error} emptyLabel="" />
-              ) : (
-                <ShapeList fields={outputShape} />
-              )}
-            </section>
-          );
-        })()}
+        {hasOutputData && (
+          <section className="mt-4 border-t border-border pt-3">
+            <SectionTitle>Outputs</SectionTitle>
+            {hasExecOutputs ? (
+              <ExecutionPager executions={executions!}>
+                {(record) => (
+                  <KeyValueGrid
+                    value={record.output as Record<string, unknown> | undefined}
+                    error={record.error}
+                    emptyLabel=""
+                  />
+                )}
+              </ExecutionPager>
+            ) : (
+              <KeyValueGrid value={outputValue} error={state?.error} emptyLabel="" />
+            )}
+          </section>
+        )}
 
         <section className="mt-4 border-t border-border pt-3">
           <button
@@ -932,6 +943,20 @@ export function Inspector() {
                   {definition!.inputSchema!.fields.map((f) => (
                     <InputWiringRow key={f.name} node={node} field={f} />
                   ))}
+                </section>
+              )}
+
+              {schemasInDetails && !hasInputVal && inputShape.length > 0 && (
+                <section className="mb-4">
+                  <SectionTitle>Inputs</SectionTitle>
+                  <ShapeList fields={inputShape} />
+                </section>
+              )}
+
+              {schemasInDetails && !hasOutputData && outputShape.length > 0 && (
+                <section className="mb-4">
+                  <SectionTitle>Outputs</SectionTitle>
+                  <ShapeList fields={outputShape} />
                 </section>
               )}
             </div>

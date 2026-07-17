@@ -37,6 +37,7 @@ export type AgentIntent =
   | { action: 'edit-node'; flowId: string; nodeId: string; instruction: string }
   | { action: 'edit-flow'; flowId: string; instruction: string; scaffold?: boolean }
   | { action: 'new-operation'; location: string; instruction: string }
+  | { action: 'build-api'; location: string; instruction: string }
   | { action: 'setup-auth'; environment: string; instruction: string }
   | { action: 'setup-environments'; instruction: string }
   | { action: 'scout-infrastructure'; instruction: string }

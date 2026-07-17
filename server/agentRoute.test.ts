@@ -155,6 +155,25 @@ async function postAgentWhenFree(body: unknown): Promise<Response> {
   return postAgent(body);
 }
 
+describe('POST /agent — build-api route validation', () => {
+  it('accepts a build-api intent with location + instruction (no flowId — nothing exists yet)', async () => {
+    const res = await postAgentWhenFree({
+      intent: { action: 'build-api', location: 'billing', instruction: 'invoices: draft, send, track payment' },
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(typeof body.agentRunId).toBe('string');
+    expect(body.agentRunId.length).toBeGreaterThan(0);
+  });
+
+  it('400s a build-api intent without a location', async () => {
+    const res = await postAgent({ intent: { action: 'build-api', instruction: 'an invoices API' } });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('location');
+  });
+});
+
 describe('POST /agent — ask route validation', () => {
   it('accepts an ask intent WITHOUT flowId', async () => {
     const res = await postAgentWhenFree({ intent: { action: 'ask', instruction: 'where is the slack rendering?' } });

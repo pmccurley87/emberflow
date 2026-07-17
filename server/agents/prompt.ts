@@ -23,6 +23,7 @@ export type AgentIntent =
   | { action: 'edit-node'; flowId: string; nodeId: string; instruction: string }
   | { action: 'edit-flow'; flowId: string; instruction: string; scaffold?: boolean }
   | { action: 'new-operation'; location: string; instruction: string }
+  | { action: 'build-api'; location: string; instruction: string }
   | { action: 'setup-auth'; environment: string; instruction: string }
   | { action: 'setup-environments'; instruction: string }
   | { action: 'scout-infrastructure'; instruction: string }
@@ -369,6 +370,46 @@ export function buildPrompt(
       lines.push('');
       lines.push(
         `ENVIRONMENTS + SECRETS INTAKE: if the operation touches infrastructure (a database, an external API, an LLM), check whether emberflow.environments.json covers what it needs. Where it doesn't, do NOT invent values: reference clearly-named secretRef keys (ctx.secrets.<KEY>) and vars (ctx.vars.<NAME>) in the node implementations, list those secret key NAMES (values never) under the relevant environment's "secrets" list in emberflow.environments.json, author the sidecar mocks so the operation is fully runnable in mock mode regardless, and END your final message by asking the user the specific open questions — which environments this should run against, which is production-like, and telling them to enter the secret values for the keys you named via the studio's Manage Environment dialog (never in this chat).`,
+      );
+      break;
+    }
+    case 'build-api': {
+      const targetDir = join(apisDir, ...relPath.split('/'));
+      lines.push(
+        `Relevant skills: emberflow-model-process (decomposition + verbatim porting when the goal models existing code), emberflow-new-workflow (authoring each operation), emberflow-review-workflow (the shipping rubric).`,
+      );
+      lines.push('');
+      lines.push(
+        `Task: design and build the API SURFACE that achieves the user's goal below, inside ${targetDir}. You own the whole surface — how many operations it takes, what each is named, which are HTTP endpoints and which are internal sub-flows, and how they share logic — that is YOUR design judgment, not a given. One operation is a perfectly valid outcome when the goal genuinely is one endpoint; a goal spanning several durable process boundaries (independently triggered handlers, resumable stages, separately reusable domain processes) becomes several operations. Do NOT cram a multi-boundary process into one operation, and do NOT split one cohesive process across operations for tidiness.`,
+      );
+      lines.push('');
+      lines.push(`User goal (verbatim): ${intent.instruction}`);
+      lines.push('');
+      lines.push('Work in this order:');
+      lines.push(
+        `1. DESIGN FIRST. Read what the goal models (existing code when it names some — the model-process skill's process-boundary rules apply; the infrastructure manifest above when present). Write ONE short message to the panel before creating anything: the operations you intend (id + one line each) and why those boundaries. Then build — do not wait for approval.`,
+      );
+      lines.push(
+        `2. CREATE EACH OPERATION with the CLI shell first, then build it out (same discipline as a single new operation — this is that recipe, repeated):`,
+      );
+      lines.push(`     node ${EMBERFLOW_BIN} create ${relPath}/<slug> --method <METHOD> --path </route> --name "<Display Name>"   (HTTP endpoint)`);
+      lines.push(`     node ${EMBERFLOW_BIN} create ${relPath}/<slug> --name "<Display Name>"                                       (internal sub-flow)`);
+      lines.push(
+        `   Create operations ONE AT A TIME and finish each (logic nodes, mocks, scenarios, a passing run) before starting the next — the studio shows each one appearing and taking shape as you go, which is exactly the experience the user should have. Shared internal processes become their own internal operations called via Subflow nodes.`,
+      );
+      lines.push(
+        `3. Register any node implementations each operation needs in the project config's registerNodes (one module — see the one-file rule in emberflow-basics). ${traceKindLine}`,
+      );
+      lines.push(
+        `4. VERIFY EACH: node ${EMBERFLOW_BIN} run <id> per operation (and per scenario), iterating until green. ${doctorLine('<each id>')}`,
+      );
+      lines.push('');
+      lines.push(
+        `ENVIRONMENTS + SECRETS INTAKE: same rules as any operation — reference clearly-named secretRef keys, never values; list key NAMES under the relevant environment's "secrets"; mocks make every operation runnable in mock mode regardless; END your final message with the open questions (which environments, which production-like, which secret values to enter via Manage Environment).`,
+      );
+      lines.push('');
+      lines.push(
+        `FINISH with a one-line-per-operation summary: id — what it does — HTTP route or "internal". The studio turns the operations you created into open buttons, so exact ids matter.`,
       );
       break;
     }

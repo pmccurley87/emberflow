@@ -294,12 +294,22 @@ export interface ScenarioTestReport {
  * the studio never duplicates expectation-evaluation logic). The id is
  * URL-encoded so ids containing a slash (the apis-tree path) match the
  * `/workflows/:id/test` route instead of 404ing.
+ *
+ * `mock` defaults to undefined (server-side default: real run) — the
+ * Scenarios panel's deliberate "Test" button click relies on that default
+ * being a real run and must keep calling this with two args. Pass
+ * `mock: true` for any caller that must never touch real infrastructure
+ * (e.g. an automatic, unclicked fetch).
  */
-export async function testWorkflow(id: string, environment?: string): Promise<ScenarioTestReport> {
+export async function testWorkflow(
+  id: string,
+  environment?: string,
+  mock?: boolean,
+): Promise<ScenarioTestReport> {
   const response = await fetch(`${BASE}/workflows/${encodeURIComponent(id)}/test`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ environment }),
+    body: JSON.stringify({ environment, mock }),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as { error?: string };

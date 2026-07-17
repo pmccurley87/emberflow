@@ -3,6 +3,7 @@ import { FlameIcon, PanelBottomOpenIcon, PanelLeftOpenIcon, PanelRightOpenIcon, 
 import { Button } from '@/components/ui/button';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { AgentConsole } from './components/AgentConsole';
+import { CommandBar } from './components/CommandBar';
 import { CreateModalHost } from './components/CreateModal';
 import { Dock } from './components/Dock';
 import { EMPTY_STATE_DISMISSED_KEY, EmptyState } from './components/EmptyState';
@@ -111,6 +112,7 @@ function CenterView() {
   const welcomeOpen = useBuilderStore((s) => s.welcomeOpen);
   const setCreateModal = useBuilderStore((s) => s.setCreateModal);
   const switchWorkflow = useBuilderStore((s) => s.switchWorkflow);
+  const buildingApiLocation = useBuilderStore((s) => s.buildingApiLocation);
   // Explicit dismissal of the post-onboarding empty state ("explore the
   // example" path). Building a second op dismisses it implicitly — onlyHello
   // stops matching once setupStatus refreshes (WelcomeDialog/StatusBar refetch
@@ -129,8 +131,10 @@ function CenterView() {
     );
   }
   // Post-onboarding: the bare hello-example project gets a clear starting point
-  // instead of someone else's op — hidden while the Welcome dialog still runs.
-  if (!welcomeOpen && !emptyDismissed && setupStatus?.ops.onlyHello) {
+  // instead of someone else's op — hidden while the Welcome dialog still runs,
+  // and while a build-api run is designing the first real API (the runbook's
+  // holding pattern owns the canvas until its first operation lands).
+  if (!welcomeOpen && !emptyDismissed && setupStatus?.ops.onlyHello && !buildingApiLocation) {
     return (
       <div className="relative h-full min-h-0">
         <EmptyState
@@ -308,6 +312,7 @@ export default function App() {
       {/* The one New API / New operation modal — hosted here (not in the
           Sidebar) so the canvas empty state can open it with the sidebar closed. */}
       <CreateModalHost />
+      <CommandBar />
     </div>
   );
 }

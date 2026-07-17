@@ -506,21 +506,29 @@ api.delete('/workflows/:id', (req, res) => {
 // redaction path the CLI's `emberflow test` uses, NO second expectation
 // engine. Deliberately bypasses RunRegistry (bare `startRun`, same as the
 // CLI path): these runs must never surface as SSE events or run history.
+// Body may carry `mock?: boolean`, threaded straight to runScenarioSuiteFor —
+// callers that need example-data-only runs (e.g. the builder's auto-fetched
+// post-agent-run verdict) pass `mock: true`; the deliberate "Test" button
+// click omits it and gets the default real run.
 api.post('/workflows/:id/test', async (req: Request, res: Response) => {
   const opId = String(req.params.id);
   if (!apiStore.load(opId)) {
     res.status(404).json({ error: `Unknown workflow: ${opId}` });
     return;
   }
-  const { environment } = (req.body ?? {}) as { environment?: unknown };
+  const { environment, mock } = (req.body ?? {}) as { environment?: unknown; mock?: unknown };
   if (environment !== undefined && typeof environment !== 'string') {
     res.status(400).json({ error: 'environment must be a string' });
+    return;
+  }
+  if (mock !== undefined && typeof mock !== 'boolean') {
+    res.status(400).json({ error: 'mock must be a boolean' });
     return;
   }
   try {
     const report = await runScenarioSuiteFor(
       { apiStore, registry: executionRegistry, environmentsFile },
-      { opId, environmentName: environment },
+      { opId, environmentName: environment, mock },
     );
     res.json(report);
   } catch (err) {
@@ -1029,6 +1037,7 @@ api.post('/agent', (req: Request, res: Response) => {
     intent.action !== 'edit-node' &&
     intent.action !== 'edit-flow' &&
     intent.action !== 'new-operation' &&
+    intent.action !== 'build-api' &&
     intent.action !== 'setup-auth' &&
     intent.action !== 'setup-environments' &&
     intent.action !== 'scout-infrastructure' &&
@@ -1037,13 +1046,13 @@ api.post('/agent', (req: Request, res: Response) => {
     intent.action !== 'ask'
   ) {
     res.status(400).json({
-      error: `Unsupported intent.action: ${intent.action}. Must be one of new-scenario, edit-node, edit-flow, new-operation, setup-auth, setup-environments, scout-infrastructure, guided-setup, cover-operation, ask.`,
+      error: `Unsupported intent.action: ${intent.action}. Must be one of new-scenario, edit-node, edit-flow, new-operation, build-api, setup-auth, setup-environments, scout-infrastructure, guided-setup, cover-operation, ask.`,
     });
     return;
   }
-  if (intent.action === 'new-operation') {
+  if (intent.action === 'new-operation' || intent.action === 'build-api') {
     if (typeof intent.location !== 'string') {
-      res.status(400).json({ error: 'Body must include intent: { action: "new-operation", location, instruction }' });
+      res.status(400).json({ error: `Body must include intent: { action: "${intent.action}", location, instruction }` });
       return;
     }
   } else if (intent.action === 'setup-auth') {

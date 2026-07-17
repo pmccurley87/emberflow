@@ -53,6 +53,15 @@ beforeAll(async () => {
       { type: 'EchoToken', label: 'Echo Token', inputSchema: { fields: [{ name: 'token', type: 'string' }] } },
       async (ctx) => ({ token: ctx.input.token }),
     );
+    // traceKind 'http' infra node whose real implementation always throws —
+    // proves a scenario can only pass by taking the mocked short-circuit
+    // (mockRun path in src/engine/executor.ts), never by actually executing.
+    registry.register(
+      { type: 'RiskyHttp', label: 'Risky HTTP Call', traceKind: 'http', inputSchema: { fields: [] } },
+      async () => {
+        throw new Error('REAL INFRA CALL ATTEMPTED');
+      },
+    );
   },
 };\n`,
   );
@@ -188,6 +197,49 @@ beforeAll(async () => {
     JSON.stringify([{ id: 's1', name: 'boom', input: {}, expect: { status: 200 } }]),
   );
 
+  // risky: an infra (traceKind 'http') node whose real implementation always
+  // throws. Only passes if the suite actually runs mocked — proof that
+  // `{ mock: true }` in the request body reaches runScenarioSuiteFor.
+  writeFileSync(
+    join(apisDir, 'risky.json'),
+    JSON.stringify({
+      id: 'risky',
+      name: 'Risky',
+      version: 1,
+      nodes: [
+        {
+          id: 'input',
+          type: 'Input',
+          label: 'Input',
+          position: { x: 0, y: 0 },
+          config: { fields: [] },
+        },
+        {
+          id: 'call',
+          type: 'RiskyHttp',
+          label: 'Risky Call',
+          position: { x: 200, y: 0 },
+          config: {},
+        },
+      ],
+      edges: [{ id: 'e1', source: 'input', target: 'call' }],
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    }),
+  );
+  writeFileSync(
+    join(apisDir, 'risky.scenarios.json'),
+    JSON.stringify([
+      {
+        id: 's1',
+        name: 'mocked-call',
+        input: {},
+        expect: { executedNodes: ['call'] },
+        mocks: { call: { ok: true } },
+      },
+    ]),
+  );
+
   proc = bootRunner(PORT, { EMBERFLOW_PROJECT: projectDir });
   await waitHealthy(`${base}/healthz`);
 }, 20_000);
@@ -250,6 +302,37 @@ describe('POST /workflows/:id/test', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBeTruthy();
+  });
+
+  it('400s when mock is not a boolean', async () => {
+    const res = await postTest('authcheck', { mock: 'yes' });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBeTruthy();
+  });
+
+  // Safety regression coverage: `{ mock: true }` in the body must actually
+  // reach runScenarioSuiteFor's mock path (server/testRunner.ts), not just be
+  // accepted and ignored. `risky`'s node always throws for real, so it can
+  // only pass by running mocked.
+  it('{ mock: true } runs the suite mocked — an infra node with a scenario mock passes without executing for real', async () => {
+    const res = await postTest('risky', { mock: true });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.failed).toBe(0);
+    expect(body.passed).toBe(1);
+    const result = body.results.find((r: { scenario: string }) => r.scenario === 'mocked-call');
+    expect(result.status).toBe('passed');
+  });
+
+  it('omitting mock (the default) runs the suite for real — the same infra node fails against its throwing implementation', async () => {
+    const res = await postTest('risky');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.failed).toBe(1);
+    const result = body.results.find((r: { scenario: string }) => r.scenario === 'mocked-call');
+    expect(result.status).toBe('failed');
+    expect(result.failures.join(' ')).toContain('call did not execute');
   });
 
   it('does not create a RunRegistry run — GET /runs/:id/events for an id returned mid-suite still 404s, and a pre-existing run stays the last one visible', async () => {

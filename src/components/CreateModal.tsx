@@ -49,9 +49,9 @@ const OPERATION_EXAMPLES = [
   'Webhook that verifies a Stripe event',
 ];
 const API_EXAMPLES = [
-  'Create a draft invoice',
-  'Look up a customer by email',
-  'Start a background export job',
+  'Manage customer invoices — draft, send, and track payment',
+  'Look up customers and their recent orders',
+  'Run background exports and report their status',
 ];
 
 /**
@@ -89,9 +89,10 @@ export function CreateModalHost() {
 
 /**
  * The agentic create surface — one centered modal for both "New API" (name +
- * its first operation) and "New operation" (scoped to an API, or with a
- * location picker). Describe the goal in plain language; the agent picks the
- * method/path/nodes and builds it. Streams into the AgentConsole on submit.
+ * a plain-language goal; the agent designs the whole surface and decides how
+ * many operations it needs) and "New operation" (scoped to an API, or with a
+ * location picker; a stub is stood up and the agent fills it in). Streams into
+ * the AgentConsole on submit.
  */
 export function CreateModal({
   state,
@@ -103,6 +104,7 @@ export function CreateModal({
   locations: string[];
 }) {
   const createAndBuild = useBuilderStore((s) => s.createAndBuild);
+  const buildApi = useBuilderStore((s) => s.buildApi);
   const agentRunning = useBuilderStore((s) => s.agentRun?.status === 'running');
 
   const [apiName, setApiName] = useState('');
@@ -136,6 +138,14 @@ export function CreateModal({
 
   const submit = () => {
     if (!canSubmit) return;
+    if (mode === 'api') {
+      // Describe-and-build: no stub — the agent designs the whole API surface
+      // (how many operations, their names and routes) from the goal. Operations
+      // appear in the sidebar live as it creates them.
+      buildApi({ location: targetLocation, goal: goal.trim() });
+      onOpenChange(false);
+      return;
+    }
     const { name, method, httpPath } = deriveOperation(goal.trim(), targetLocation);
     // Stand up the stub + select it, then let the agent fill it in. The user
     // sees the operation's name and route immediately, with a holding pattern
@@ -160,7 +170,7 @@ export function CreateModal({
             </DialogTitle>
             <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
               {mode === 'api'
-                ? 'Name the API and describe its first operation — the agent builds it.'
+                ? 'Name the API and describe what it should do — the agent designs and builds the operations.'
                 : scopedLabel
                   ? 'Describe what this operation should do — the agent builds it.'
                   : 'Pick where it lives and describe what it should do.'}
@@ -246,7 +256,7 @@ export function CreateModal({
           {/* Goal */}
           <div className="flex flex-col gap-1.5">
             <label className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              {mode === 'api' ? 'What should its first operation do?' : 'What should this operation do?'}
+              {mode === 'api' ? 'What should this API do?' : 'What should this operation do?'}
             </label>
             <textarea
               ref={goalRef}
@@ -258,7 +268,11 @@ export function CreateModal({
                   submit();
                 }
               }}
-              placeholder="Describe the goal in plain language — the agent picks the method, path, and nodes."
+              placeholder={
+                mode === 'api'
+                  ? 'Describe the goal in plain language — the agent designs the operations, routes, and nodes.'
+                  : 'Describe the goal in plain language — the agent picks the method, path, and nodes.'
+              }
               rows={5}
               className={cn(
                 'w-full resize-none rounded-md border border-input bg-input/30 px-3 py-2.5 text-[13.5px] leading-relaxed text-foreground shadow-xs outline-none transition-colors',
@@ -283,6 +297,12 @@ export function CreateModal({
                 </button>
               ))}
             </div>
+            {mode === 'api' && (
+              <p className="text-[11px] leading-relaxed text-muted-foreground/80">
+                The agent decides how many operations this needs — they appear in the sidebar as
+                they&rsquo;re created.
+              </p>
+            )}
           </div>
         </div>
 
@@ -299,7 +319,8 @@ export function CreateModal({
           <div className="flex items-center gap-2">
             <span className="hidden text-[10px] text-muted-foreground/60 sm:inline">⌘⏎</span>
             <Button size="sm" onClick={submit} disabled={!canSubmit}>
-              <SparklesIcon /> {agentRunning ? 'Agent running…' : 'Create with AI'}
+              <SparklesIcon />{' '}
+              {agentRunning ? 'Agent running…' : mode === 'api' ? 'Design & build with AI' : 'Create with AI'}
             </Button>
           </div>
         </div>

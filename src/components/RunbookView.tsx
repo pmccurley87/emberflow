@@ -6,9 +6,12 @@ import { useBuilderStore } from '../store/builderStore';
 import { Json } from './Json';
 import { buildRunbook } from '../lib/runbookModel';
 import type { RunbookBranchGroup, RunbookItem, RunbookLoopGroup, RunbookStep } from '../lib/runbookModel';
-import { iterationSummary, projectRunbook } from '../lib/runbookProjection';
+import { iterationSummary, projectRunbook, runProvenance, runSourceLabel } from '../lib/runbookProjection';
 import type { RunbookProjection, StepVisualStatus } from '../lib/runbookProjection';
 import type {WorkflowRun } from '../engine';
+import type { ScenarioDefinition } from '../engine/types';
+import type { ScenarioTestReport } from '../store/serverRunner';
+import { ScenarioStrip } from './ScenarioStrip';
 
 function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
@@ -259,6 +262,10 @@ interface RunbookCtx {
   displayStatus: (nodeId: string, real: StepVisualStatus) => StepVisualStatus;
   /** Header toggle: expand every branch group regardless of taken state. */
   expandAll: boolean;
+  /** True while viewing a peeked (read-only) drill ancestor rather than the
+   *  live level — gates row affordances that act on the LIVE run/flow (e.g.
+   *  "Ask the agent why"), mirroring how `selectNode` no-ops while peeking. */
+  peeking: boolean;
 }
 
 /** The 9px status square: idle is an empty outline, ran/failed fill solid,
@@ -383,6 +390,8 @@ function KindBadge({
 
 function StepRow({ step, ctx }: { step: RunbookStep; ctx: RunbookCtx }) {
   const registry = useBuilderStore((s) => s.registry);
+  const askAboutFailure = useBuilderStore((s) => s.askAboutFailure);
+  const agentRunning = useBuilderStore((s) => s.agentRun?.status === 'running');
   const proj = ctx.projection.steps.get(step.nodeId);
   const status = ctx.displayStatus(step.nodeId, proj?.status ?? 'idle');
   const executed = status === 'ran' || status === 'failed' || status === 'active';
@@ -600,6 +609,19 @@ function StepRow({ step, ctx }: { step: RunbookStep; ctx: RunbookCtx }) {
         <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatDuration(proj.durationMs)}</span>
       )}
     </div>
+    {status === 'failed' && !ctx.peeking && (
+      <div className="ml-[54px] mb-1">
+        <button
+          type="button"
+          disabled={agentRunning}
+          title={agentRunning ? 'Wait for the current agent run to finish' : undefined}
+          onClick={() => askAboutFailure(step.nodeId)}
+          className="mt-1 text-[10.5px] text-highlight underline underline-offset-2 hover:text-highlight/80 disabled:cursor-not-allowed disabled:opacity-50 disabled:no-underline"
+        >
+          Ask the agent why
+        </button>
+      </div>
+    )}
     {hasResult && (
       <div className="ml-[54px] mb-1">
         <button
@@ -847,6 +869,9 @@ function RunbookHeader({
   expandAll,
   onToggleExpandAll,
   crumbs,
+  scenarios,
+  scenarioReport,
+  onRunScenario,
 }: {
   name: string;
   environment?: string;
@@ -856,6 +881,12 @@ function RunbookHeader({
   /** Step-drill trail, root first — rendered above the title while a stepped
    *  run is inside a subflow. Ancestor clicks are a view-only peek. */
   crumbs?: DrillCrumb[];
+  /** The displayed flow's own scenarios — a drilled child view carries its
+   *  own `scenarios` field (same `WorkflowDefinition` shape), so the strip
+   *  naturally follows drilling with no special-casing here. */
+  scenarios: ScenarioDefinition[];
+  scenarioReport: ScenarioTestReport | undefined;
+  onRunScenario: (scenarioId: string) => void;
 }) {
   return (
     <div className="mb-6">
@@ -900,6 +931,7 @@ function RunbookHeader({
           {expandAll ? <ChevronsDownUpIcon className="size-3.5" /> : <ChevronsUpDownIcon className="size-3.5" />}
         </button>
       </div>
+      <ScenarioStrip scenarios={scenarios} report={scenarioReport} onRun={onRunScenario} />
     </div>
   );
 }
@@ -907,7 +939,17 @@ function RunbookHeader({
 /** Calm end-of-document run readout. While the reveal queue is still draining
  * (`filling`) it stays "Running" even though the engine already finished — the
  * document isn't done until the last step has been read out. */
-function RunbookFooter({ run, filling }: { run: WorkflowRun; filling: boolean }) {
+function RunbookFooter({
+  run,
+  filling,
+  mock,
+  environment,
+}: {
+  run: WorkflowRun;
+  filling: boolean;
+  mock: boolean;
+  environment: string;
+}) {
   const live = run.status === 'running' || filling;
   const ran = Object.values(run.nodeStates).filter(
     (s) => s.status === 'succeeded' || s.status === 'failed',
@@ -926,6 +968,8 @@ function RunbookFooter({ run, filling }: { run: WorkflowRun; filling: boolean })
       : run.status === 'succeeded'
         ? 'text-success'
         : 'text-muted-foreground';
+  const sourceLabel = runSourceLabel(mock, environment);
+  const sourceTone = mock ? 'text-warn' : 'text-muted-foreground';
   return (
     <div className="mt-8 flex items-center gap-2 border-t border-border/60 pt-3 text-[11px] text-muted-foreground">
       <span className={cn('size-1.5 shrink-0 rounded-full bg-current', tone, live && 'motion-safe:animate-pulse')} />
@@ -933,6 +977,7 @@ function RunbookFooter({ run, filling }: { run: WorkflowRun; filling: boolean })
       <span className="font-mono text-[10.5px] text-muted-foreground/80">
         {ran} step{ran === 1 ? '' : 's'} executed
       </span>
+      <span className={cn('text-[10.5px]', sourceTone)}>· {sourceLabel}</span>
     </div>
   );
 }
@@ -947,18 +992,23 @@ function RunbookFooter({ run, filling }: { run: WorkflowRun; filling: boolean })
 /** The canvas holding pattern shown while the agent scaffolds a just-created
  *  operation. The stub (name + route) is already selected; this stands in for
  *  the empty body until the agent writes the flow, which then loads live. */
-function BuildingHolding({ route }: { route?: string }) {
+function BuildingHolding({
+  route,
+  title = 'Building this operation…',
+  body = 'The agent is writing the flow. It appears here live the moment it’s done — you can watch its progress in the Agent panel.',
+}: {
+  route?: string;
+  title?: string;
+  body?: string;
+}) {
   return (
     <div className="mt-10 flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-highlight/30 bg-highlight/[0.03] px-6 py-14 text-center">
       <span className="ember-step-active flex size-11 items-center justify-center rounded-full bg-highlight/15 text-highlight">
         <SparklesIcon className="size-5" />
       </span>
       <div className="flex flex-col gap-1">
-        <span className="text-[14px] font-medium text-foreground">Building this operation…</span>
-        <span className="max-w-sm text-[12.5px] leading-relaxed text-muted-foreground">
-          The agent is writing the flow. It appears here live the moment it’s done — you can watch its
-          progress in the Agent panel.
-        </span>
+        <span className="text-[14px] font-medium text-foreground">{title}</span>
+        <span className="max-w-sm text-[12.5px] leading-relaxed text-muted-foreground">{body}</span>
       </div>
       {route && (
         <span className="rounded-md border border-border/60 bg-secondary/40 px-2 py-1 font-mono text-[11.5px] text-muted-foreground">
@@ -977,6 +1027,9 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
   const liveFlow = useBuilderStore((s) => s.flow);
   const registry = useBuilderStore((s) => s.registry);
   const buildingOperationId = useBuilderStore((s) => s.buildingOperationId);
+  const scenarioTestReports = useBuilderStore((s) => s.scenarioTestReports);
+  const runScenario = useBuilderStore((s) => s.runScenario);
+  const buildingApiLocation = useBuilderStore((s) => s.buildingApiLocation);
   const liveRun = useBuilderStore((s) => s.run);
   const logs = useBuilderStore((s) => s.logs);
   const runHistory = useBuilderStore((s) => s.runHistory);
@@ -985,6 +1038,8 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
   const stepDrill = useBuilderStore((s) => s.stepDrill);
   const drillPeek = useBuilderStore((s) => s.drillPeek);
   const peekDrill = useBuilderStore((s) => s.peekDrill);
+  const activeRunMock = useBuilderStore((s) => s.activeRunMock);
+  const selectedEnvironment = useBuilderStore((s) => s.selectedEnvironment);
 
   // While a stepped run is drilled into a subflow, an ancestor crumb click is
   // a view-only PEEK: render that stashed level's flow/run without popping the
@@ -995,6 +1050,19 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
   const run = peeking ? stepDrill[drillPeek].savedRun : liveRun;
   // Peeked levels are read-only: selection stays with the live level.
   const selectedNodeId = peeking ? null : storeSelectedNodeId;
+
+  // The DISPLAYED run's own provenance, not the live editor's current
+  // mock/environment toggles — `viewRun` (builderStore.ts) can swap `run` to
+  // a `runHistory` entry without touching those live flags, so a mocked run
+  // opened from history while the live toggles now say "prod" must still
+  // read as mocked. See runProvenance's doc comment for the full rationale.
+  const runHistoryEntry = run ? runHistory.find((r) => r.id === run.id) : undefined;
+  const { mock: runMock, environment: runEnvironment } = runProvenance(
+    run,
+    runHistoryEntry,
+    activeRunMock,
+    selectedEnvironment,
+  );
 
   const doc = useMemo(() => buildRunbook(flow, registry), [flow, registry]);
   // A drilled-in CHILD view (the live deepest level, or a peeked mid-level —
@@ -1105,9 +1173,15 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
     displayStatus,
     expandAll,
     request,
+    peeking,
   };
   const subtitle = flow.folder ?? `${flow.nodes.length} step${flow.nodes.length === 1 ? '' : 's'}`;
   const building = buildingOperationId === flow.id;
+  // A build-api run in flight and nothing under its location selected yet —
+  // hold the canvas until the live poll auto-selects the agent's first op,
+  // at which point flow.id sits under the location and this clears naturally.
+  const buildingApi =
+    buildingApiLocation !== null && !flow.id.startsWith(`${buildingApiLocation}/`);
 
   // Step-drill breadcrumb: ancestors from the stashed levels (root first),
   // then the deepest (live) flow. Ancestor clicks peek; the last crumb
@@ -1127,20 +1201,40 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
   return (
     <div ref={scrollRef} className="h-full min-h-0 overflow-y-auto bg-background">
       <div className="mx-auto max-w-[800px] px-4 pt-[26px] pb-[140px]">
-        <RunbookHeader
-          name={flow.name}
-          environment={flow.environment}
-          subtitle={subtitle}
-          expandAll={expandAll}
-          onToggleExpandAll={() => setExpandAll((v) => !v)}
-          crumbs={crumbs}
-        />
-        {building ? (
+        {/* While the agent designs a whole API and nothing under it is selected
+            yet, the selected flow is unrelated — its header would mislead, so
+            only the holding pattern renders. */}
+        {!buildingApi && (
+          <RunbookHeader
+            name={flow.name}
+            environment={flow.environment}
+            subtitle={subtitle}
+            expandAll={expandAll}
+            onToggleExpandAll={() => setExpandAll((v) => !v)}
+            crumbs={crumbs}
+            scenarios={flow.scenarios ?? []}
+            scenarioReport={scenarioTestReports[flow.id]}
+            onRunScenario={runScenario}
+          />
+        )}
+        {buildingApi ? (
+          <BuildingHolding
+            title="Designing this API…"
+            body="Operations appear in the sidebar as the agent creates them — watch progress in the Agent panel."
+          />
+        ) : building ? (
           <BuildingHolding route={flow.http ? `${flow.http.method} ${flow.http.path}` : undefined} />
         ) : (
           <>
             <RunbookItems items={doc.items} ctx={ctx} />
-            {run && <RunbookFooter run={run} filling={activeDisplayId !== null} />}
+            {run && (
+              <RunbookFooter
+                run={run}
+                filling={activeDisplayId !== null}
+                mock={runMock}
+                environment={runEnvironment}
+              />
+            )}
           </>
         )}
       </div>

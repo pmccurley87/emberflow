@@ -116,6 +116,47 @@ export function iterationSummary(exec: ExecutionRecord): string {
   return `→ out[${keys.slice(0, 4).join(', ')}]`;
 }
 
+/** One honest phrase for where a run's data came from — mock runs must never
+ *  read as real success. Rendered beside the run status line. */
+export function runSourceLabel(mock: boolean, environment: string): string {
+  if (mock) return 'on example data — nothing real executed';
+  return environment ? `against ${environment}` : 'against the default environment';
+}
+
+/**
+ * Resolve mock/environment for whichever run is actually DISPLAYED, not the
+ * live editor's current toggles. `viewRun` (builderStore.ts) can point `run`
+ * at a `runHistory` entry without touching `activeRunMock`/`selectedEnvironment`
+ * — e.g. run in mock, switch to prod, then open an old mocked run from
+ * history. Reading the live flags in that case mislabels the historical run
+ * with the CURRENT session's env/mock state.
+ *
+ * `historyEntry` (the `runHistory` row matching `run.id`, when present) is
+ * the run's own frozen provenance — `mock` per `RunHistoryEntry.mock`
+ * (builderStore.ts recordRun tags it from `activeRunMock` at record time,
+ * never mutated after). When no history entry matches, the run is still
+ * live/in-flight (not yet recorded — see `recordRun`), so the live mock flag
+ * is the correct, only available source.
+ *
+ * Environment prefers the run's own `WorkflowRun.environment` (set by the
+ * server on the finished run — see `onFinished` in builderStore.ts) over the
+ * history entry's copy of it, falling back to the live `selectedEnvironment`
+ * only for a run still in flight (the server hasn't reported `environment`
+ * back yet).
+ */
+export function runProvenance(
+  run: WorkflowRun | null,
+  historyEntry: RunHistoryEntry | undefined,
+  liveMock: boolean,
+  liveEnvironment: string,
+): { mock: boolean; environment: string } {
+  if (!run) return { mock: liveMock, environment: liveEnvironment };
+  return {
+    mock: historyEntry ? !!historyEntry.mock : liveMock,
+    environment: run.environment ?? historyEntry?.environment ?? liveEnvironment,
+  };
+}
+
 interface CollectedStep {
   nodeId: string;
   typeName: string;

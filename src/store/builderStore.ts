@@ -35,6 +35,7 @@ import type { AgentEvent, AgentIntent, AgentKind, StartAgentOptions } from './ag
 import { fetchSetupStatus } from './setupClient';
 import type { SetupStatus } from './setupClient';
 import { extractGuidedQuestions } from '../lib/guidedQuestions';
+import { operationIdFromFile } from '../lib/operationFiles';
 
 export interface WorkflowSummary {
   id: string;
@@ -265,6 +266,10 @@ interface BuilderState {
   refreshSetupStatus(): Promise<SetupStatus | null>;
   /** Open the agent panel (no toggle). */
   openAgentPanel(): void;
+  /** One-click failure triage: composes an `ask` run from a failed node's
+   *  label + error (reading the LIVE flow/run — not a peeked drill ancestor)
+   *  and opens the agent panel on it. */
+  askAboutFailure(nodeId: string): void;
   /** Where the run console docks (persisted). Default 'right'. */
   /** null = no explicit choice — the register decides (technical → bottom, simple → right). */
   consolePosition: 'right' | 'bottom' | null;
@@ -340,6 +345,13 @@ interface BuilderState {
     instruction?: string;
     diff?: string;
     files?: string[];
+    /** Per-touched-operation scenario-suite result, fetched from the runner
+     *  (POST /workflows/:id/test, in mock mode) once the run finishes — the
+     *  judgment card answers "is it right?" with the project's own proof
+     *  units instead of leaving it to the user to go run the suite. Keyed by
+     *  operation id; a fetch failure lands as `{ error }` rather than
+     *  dropping the operation from the map. */
+    verdicts?: Record<string, ScenarioTestReport | { error: string }>;
     /** True when this run is a `guided-setup` run OWNED by the WelcomeDialog's
      *  two-pane phase machine. It suppresses the right-hand AgentConsole
      *  auto-open (the dialog embeds the stream itself) and, since the run lives
@@ -372,6 +384,41 @@ interface BuilderState {
    * until the agent finishes writing it. Cleared when the agent run completes.
    */
   buildingOperationId: string | null;
+  /**
+   * The API location (e.g. `"billing"`) whose surface a `build-api` agent run
+   * is currently designing. No stub exists up front — the agent decides how
+   * many operations the goal needs. While set and no operation under the
+   * location is selected yet, the canvas shows a "designing this API" holding
+   * pattern; the live poll auto-selects the first operation the agent creates.
+   * Cleared when the agent run completes.
+   */
+  buildingApiLocation: string | null;
+  /**
+   * Per-operation build activity for the sidebar's live build ledger, keyed
+   * by op id — only meaningful while `buildingApiLocation` is set. The op
+   * whose content changed on the LAST poll tick is `'building'`; ops seen in
+   * an earlier tick but unchanged since are `'done'`. `null` when no build-api
+   * run has produced a tick yet. Reset to `null` when a new `runAgent` starts
+   * (not on finish — the completed ledger stays visible, all flipped to
+   * `'done'`, until the next run begins).
+   */
+  buildLedger: Record<string, 'building' | 'done'> | null;
+  /** Text typed while an agent run is live: held, shown as queued in the panel,
+   *  and auto-dispatched as the follow-up run the moment this one finishes.
+   *  (Agent CLIs are detached with stdin ignored — mid-process injection isn't
+   *  possible; queueing is the honest version of steering.)
+   *  A second call while text is already queued APPENDS (newline-joined)
+   *  rather than replacing it — the user's first steer isn't silently
+   *  dropped just because they sent a follow-up before the run finished.
+   *  `queueSteer('')` (empty/whitespace) clears the queue. */
+  steerQueue: string | null;
+  queueSteer(text: string): void;
+  /**
+   * Commission the agent to design + build a whole API surface at `location`
+   * from a plain-language goal — no stub operation is pre-created. Operations
+   * appear in the sidebar live as the agent creates them.
+   */
+  buildApi(input: { location: string; goal: string }): void;
   /**
    * Create a stub operation (name + HTTP route) at `location`, select it so the
    * canvas shows the shell immediately, then kick an `edit-flow` agent run to
@@ -869,6 +916,17 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     agentRun: null,
     guidedTranscript: [],
     buildingOperationId: null,
+    buildingApiLocation: null,
+    buildLedger: null,
+    steerQueue: null,
+    queueSteer(text) {
+      const trimmed = text.trim();
+      if (trimmed.length === 0) {
+        set({ steerQueue: null });
+        return;
+      }
+      set((s) => ({ steerQueue: s.steerQueue ? `${s.steerQueue}\n${trimmed}` : trimmed }));
+    },
     agentChoice: initialAgentChoice,
     setAgentChoice(choice) {
       set({ agentChoice: choice });
@@ -1106,7 +1164,27 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       return { ok: true };
     },
 
+    buildApi({ location, goal }) {
+      // No stub: the agent owns the whole surface — how many operations, their
+      // names, routes, and boundaries. The flag drives the canvas holding
+      // pattern until the live poll selects the first operation it creates.
+      set({ buildingApiLocation: location });
+      void get().runAgent({ action: 'build-api', location, instruction: goal });
+    },
+
     async runAgent(intent, opts) {
+      // A fresh run starts a fresh build ledger — even a steered build-api
+      // continuation (which re-sets buildingApiLocation via buildApi()) gets
+      // a clean slate here rather than carrying over the prior run's marks.
+      // steerQueue is scoped to the run it was typed during: a queue left
+      // preserved-but-undispatched (e.g. a flowId-less `ask`) must not leak
+      // into a later, unrelated run started from any launch button. This is
+      // safe for the finish-dispatch path — finish() reads+clears the queue
+      // synchronously, before its follow-up runAgent call, so by the time
+      // that follow-up call reaches this line the queue it handed off is
+      // already null; this clear only ever wipes an already-stale leftover.
+      set({ buildLedger: null, steerQueue: null });
+      const launchedIntent = intent;
       const effectiveOpts = opts ?? get().agentChoice;
       // A guided-setup run is OWNED by the WelcomeDialog's embedded stream, so
       // it must NOT auto-open the right-hand AgentConsole panel. The `guided`
@@ -1118,13 +1196,33 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       // syncFromRunner can't find the old id and falls back to flows[0], leaving
       // the built op unselected — so we re-select the newly-added op on finish.
       const buildingId = get().buildingOperationId;
-      const priorIds = buildingId
+      // A build-api run creates operations from nothing — remember the op ids
+      // that existed before the run so the poll can spot the agent's new ops
+      // under the location and point the canvas at the first of them.
+      const buildingApiLoc = get().buildingApiLocation;
+      const priorIds = buildingId || buildingApiLoc
         ? new Set([get().flow.id, ...get().shelf.map((f) => f.id)])
         : null;
       let agentRunId: string;
       try {
         agentRunId = await startAgent(intent, effectiveOpts);
       } catch (err) {
+        // Guard against clobbering a live run: this catch fires for THIS
+        // call's own start failure, but by the time it lands the run slot
+        // may already hold a different, still-running run (e.g. a steered
+        // follow-up dispatched from finish() while an unrelated call to
+        // runAgent races in). Overwriting agentRun here would blow away a
+        // running run's id/events out from under it — the console would
+        // show an 'error' state for a run that's actually still going
+        // (this was the T4 ledgered race). If the slot is a running run
+        // with a DIFFERENT id, leave state alone and just log — there's no
+        // safe place in the UI to surface this specific failure without
+        // touching the live run's state.
+        const current = get().agentRun;
+        if (current && current.status === 'running' && current.id !== '') {
+          console.error('runAgent: startAgent failed while a different run is live; not overwriting agentRun', err);
+          return;
+        }
         set({
           agentRun: {
             id: '',
@@ -1154,6 +1252,19 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       // and follows a mid-run rename. Partial reads throw and are swallowed; the
       // next tick recovers.
       let livePoll: ReturnType<typeof setInterval> | undefined;
+      // Sidebar build ledger: id -> the previous tick's serialized flow, so
+      // pollOnce can tell "changed since last tick" (agent actively writing
+      // this op right now) from "seen before, unchanged" (agent moved on).
+      // WorkflowSummary carries no updatedAt, so activity is inferred from
+      // the diff itself rather than a timestamp.
+      const prevSerialized = new Map<string, string>();
+      // Tick 1 under a given location is a BASELINE tick: it seeds
+      // prevSerialized for every op already there (including ops that
+      // predate this run — e.g. CommandBar builds into 'default', which
+      // usually already has ops) without writing any ledger entries. If
+      // tick 1 classified eagerly, every pre-existing op would misread as
+      // 'building' the instant the location comes into view.
+      let ledgerSeeded = false;
       const pollOnce = async (): Promise<void> => {
         try {
           const payload = await fetchWorkflows();
@@ -1165,6 +1276,46 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
           // Rename mid-run: the open id is gone — follow the op that's new since
           // the run started (the rename target).
           if (!flow && priorIds) flow = flows.find((f) => !priorIds.has(f.id));
+          // build-api: the canvas follows the agent's work — the moment its
+          // first operation appears under the location being built, select it.
+          // Subsequent polls no-op (the selection is already under the
+          // location), so the agent's later ops don't steal the canvas.
+          const apiLoc = get().buildingApiLocation;
+          if (apiLoc && priorIds && (!flow || !flow.id.startsWith(`${apiLoc}/`))) {
+            const created = flows
+              .filter((f) => !priorIds.has(f.id) && f.id.startsWith(`${apiLoc}/`))
+              .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+            if (created.length > 0) flow = created[0];
+          }
+          // Ledger: after the baseline tick, every op under the location
+          // being built gets classified — new-since-last-tick or
+          // changed-since-last-tick is 'building' (the agent is actively
+          // writing it right now); previously 'building' and unchanged this
+          // tick is 'done'. An op that was never 'building' and hasn't
+          // changed (a pre-existing op the agent left alone) gets no entry
+          // at all, so it never shows as part of this build.
+          if (apiLoc) {
+            const underLoc = flows.filter((f) => f.id.startsWith(`${apiLoc}/`));
+            if (!ledgerSeeded) {
+              for (const f of underLoc) prevSerialized.set(f.id, JSON.stringify(f));
+              ledgerSeeded = true;
+              set({ buildLedger: {} });
+            } else {
+              const prevLedger = get().buildLedger ?? {};
+              const ledger: Record<string, 'building' | 'done'> = { ...prevLedger };
+              for (const f of underLoc) {
+                const serialized = JSON.stringify(f);
+                const prevSer = prevSerialized.get(f.id);
+                if (prevSer === undefined || prevSer !== serialized) {
+                  ledger[f.id] = 'building';
+                } else if (prevLedger[f.id] === 'building') {
+                  ledger[f.id] = 'done';
+                }
+                prevSerialized.set(f.id, serialized);
+              }
+              set({ buildLedger: ledger });
+            }
+          }
           if (!flow) return;
           const shelf = flows.filter((f) => f.id !== flow.id);
           hydrating(() =>
@@ -1188,8 +1339,22 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       const finish = async (status: 'done' | 'error') => {
         stopPoll();
         set((s) => (s.agentRun && s.agentRun.id === agentRunId ? { agentRun: { ...s.agentRun, status } } : {}));
-        // The build (if any) is over — drop the canvas holding pattern.
-        set({ buildingOperationId: null });
+        // The build (if any) is over — drop the canvas holding patterns. On
+        // a successful finish the ledger is left in place with every entry
+        // flipped to 'done' so the sidebar still reads as a completed build
+        // ledger until the next run starts and clears it. On an error finish
+        // an op still marked 'building' was left mid-edit by the agent — it
+        // never got a 'done' tick — so it's dropped rather than shown as
+        // built; already-'done' ops (completed before the failure) stay.
+        set((s) => ({
+          buildingOperationId: null,
+          buildingApiLocation: null,
+          buildLedger: s.buildLedger
+            ? status === 'done'
+              ? Object.fromEntries(Object.keys(s.buildLedger).map((id) => [id, 'done' as const]))
+              : Object.fromEntries(Object.entries(s.buildLedger).filter(([, v]) => v === 'done'))
+            : s.buildLedger,
+        }));
         if (status === 'done') {
           // Reload the flow the agent just edited so the canvas shows the change
           // live — the whole point is watching your instruction take effect.
@@ -1206,15 +1371,109 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
               const added = [get().flow, ...get().shelf].find((f) => priorIds && !priorIds.has(f.id));
               if (added) get().switchWorkflow(added.id);
             }
+            // build-api safety net: if the poll never landed a selection under
+            // the built location (e.g. the run finished between ticks), point
+            // the canvas at the first operation the agent created there.
+            if (buildingApiLoc && priorIds && !get().flow.id.startsWith(`${buildingApiLoc}/`)) {
+              const created = [get().flow, ...get().shelf]
+                .filter((f) => !priorIds.has(f.id) && f.id.startsWith(`${buildingApiLoc}/`))
+                .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+              if (created.length > 0) get().switchWorkflow(created[0].id);
+            }
           } catch {
             // reload best-effort — the diff below still shows what changed
           }
+          let files: string[] | undefined;
           try {
-            const { diff, files } = await fetchAgentDiff(agentRunId);
-            set((s) => (s.agentRun && s.agentRun.id === agentRunId ? { agentRun: { ...s.agentRun, diff, files } } : {}));
+            const diffResult = await fetchAgentDiff(agentRunId);
+            files = diffResult.files;
+            set((s) =>
+              s.agentRun && s.agentRun.id === agentRunId
+                ? { agentRun: { ...s.agentRun, diff: diffResult.diff, files: diffResult.files } }
+                : {},
+            );
           } catch {
             // Diff fetch failure isn't fatal — the console still shows the event stream.
           }
+          // Judgment, not homework: the user's question at run end is "is it
+          // right?" — answer it with the project's own proof units. One
+          // scenario-suite run per touched operation, in mock mode: `mock:
+          // true` is threaded all the way to server/testRunner.ts, so this
+          // auto-fetch (no user click) is GUARANTEED example-data-only —
+          // infra nodes with no mock fail loud instead of touching real
+          // secrets/services. Failures land as prose.
+          const opIds = [...new Set((files ?? []).map(operationIdFromFile).filter((x): x is string => x !== null))];
+          if (opIds.length > 0) {
+            const verdicts: Record<string, ScenarioTestReport | { error: string }> = {};
+            await Promise.all(
+              opIds.map(async (id) => {
+                try {
+                  verdicts[id] = await testWorkflowOnServer(id, undefined, true);
+                } catch (err) {
+                  verdicts[id] = { error: err instanceof Error ? err.message : String(err) };
+                }
+              }),
+            );
+            set((s) =>
+              s.agentRun && s.agentRun.id === agentRunId ? { agentRun: { ...s.agentRun, verdicts } } : {},
+            );
+          }
+        }
+        // Steering: text queued while this run was live becomes the next run,
+        // targeted at the same flow/location the user was just working. Runs
+        // whose intent doesn't have an obvious continuation (guided-setup &
+        // friends) manage their own follow-ups and leave the queue untouched.
+        const queued = get().steerQueue;
+        if (queued) {
+          // The agent didn't finish cleanly — tell the follow-up run so it
+          // doesn't assume the prior work is intact.
+          const failurePrefix = status === 'error' ? 'The previous attempt failed partway. ' : '';
+          // steerQueue is only cleared in the branches below, once it's
+          // actually been handed off to a follow-up run. An intent with no
+          // obvious continuation (guided-setup, a flowId-less `ask`, &
+          // friends) falls through to the bottom with the queue untouched —
+          // dropping it here would silently discard a steer the user typed
+          // mid-run instead of just deferring it.
+          if (launchedIntent.action === 'build-api') {
+            set({ steerQueue: null });
+            // Route through buildApi (not a raw runAgent) so buildingApiLocation
+            // is set again for the continuation — otherwise the live-poll holding
+            // view/canvas-follow logic silently stops working for the follow-up run.
+            get().buildApi({
+              location: launchedIntent.location,
+              goal: `${failurePrefix}Continuing the same build. The user added while you worked: ${queued}`,
+            });
+          } else if (
+            launchedIntent.action === 'edit-flow' ||
+            launchedIntent.action === 'new-scenario' ||
+            launchedIntent.action === 'cover-operation'
+          ) {
+            set({ steerQueue: null });
+            void get().runAgent({
+              action: 'edit-flow',
+              flowId: launchedIntent.flowId,
+              instruction: `${failurePrefix}${queued}`,
+            });
+          } else if (launchedIntent.action === 'setup-environments') {
+            set({ steerQueue: null });
+            // The environments chat already behaves as continuation turns —
+            // don't drop a steer just because it arrived mid-run.
+            void get().runAgent({ action: 'setup-environments', instruction: `${failurePrefix}${queued}` });
+          } else if (launchedIntent.action === 'ask' && launchedIntent.flowId) {
+            set({ steerQueue: null });
+            // An `ask` scoped to a flow has an obvious continuation: keep
+            // working that flow. A queued steer during a Q&A run reads as
+            // "now go do this", not "answer another question" — so it maps
+            // to edit-flow rather than another ask.
+            void get().runAgent({
+              action: 'edit-flow',
+              flowId: launchedIntent.flowId,
+              instruction: `${failurePrefix}${queued}`,
+            });
+          }
+          // else: guided-setup, an `ask` with no flowId, & friends have no
+          // obvious continuation target — leave steerQueue as-is so the
+          // user's steer isn't lost, even though nothing consumes it here.
         }
       };
 
@@ -1351,6 +1610,18 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
 
     openAgentPanel() {
       set({ agentPanelOpen: true });
+    },
+
+    askAboutFailure(nodeId) {
+      if (get().agentRun?.status === 'running') return;
+      const { flow, run } = get();
+      const node = flow.nodes.find((n) => n.id === nodeId);
+      const state = run?.nodeStates[nodeId];
+      const instruction =
+        `The node "${node?.label ?? nodeId}" (id: ${nodeId}) failed in the last run of this operation. ` +
+        `Error: ${state?.error ?? 'unknown'}. Explain the most likely cause in plain language and, if it is a fixable defect in the operation or its nodes, say exactly what you would change (do not change anything yet).`;
+      get().openAgentPanel();
+      void get().runAgent({ action: 'ask', flowId: flow.id, instruction });
     },
 
     toggleAgentPanel() {

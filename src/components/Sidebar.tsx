@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react';
 import {
+  CheckCircle2Icon,
   ChevronDownIcon,
   ChevronRightIcon,
   CopyIcon,
   FolderIcon,
+  LoaderCircleIcon,
   MoreHorizontalIcon,
   PlusIcon,
   SettingsIcon,
@@ -78,10 +80,34 @@ function RowMenu({ label, onDelete }: { label: string; onDelete: () => void }) {
   );
 }
 
+/**
+ * The op row's build-activity glyph, driven by the sidebar build ledger:
+ * a spinner while the agent is actively writing this op this poll tick, a
+ * check once it's moved on. Split out (rather than inlined in OperationRow)
+ * so it can be exercised directly with props in tests — OperationRow itself
+ * reads its ledger entry from the live store, which renderToStaticMarkup
+ * can't see (zustand's SSR snapshot is frozen at store creation).
+ */
+export function LedgerGlyph({ state }: { state: 'building' | 'done' | undefined }) {
+  if (state === 'building') {
+    return (
+      <LoaderCircleIcon
+        className="size-3 shrink-0 animate-spin text-highlight motion-reduce:animate-none"
+        aria-label="agent working"
+      />
+    );
+  }
+  if (state === 'done') {
+    return <CheckCircle2Icon className="size-3 shrink-0 text-success/80" aria-label="built" />;
+  }
+  return null;
+}
+
 function OperationRow({ op, depth }: { op: OpItem; depth: number }) {
   const activeId = useBuilderStore((s) => s.flow.id);
   const switchWorkflow = useBuilderStore((s) => s.switchWorkflow);
   const deleteOperations = useBuilderStore((s) => s.deleteOperations);
+  const ledgerState = useBuilderStore((s) => s.buildLedger?.[op.id]);
   const isActive = op.id === activeId;
   const rowTitle = op.method
     ? `HTTP endpoint: ${op.method} ${op.httpPath ?? ''}`.trim()
@@ -126,6 +152,7 @@ function OperationRow({ op, depth }: { op: OpItem; depth: number }) {
           {op.httpPath}
         </span>
       )}
+      <LedgerGlyph state={ledgerState} />
       <span className={op.httpPath ? '' : 'ml-auto'}>
         <RowMenu label={`Delete ${op.name}`} onDelete={() => void deleteOperations([op.id])} />
       </span>

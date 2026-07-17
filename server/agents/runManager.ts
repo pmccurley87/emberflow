@@ -46,7 +46,7 @@ function isSafeFlowId(flowId: string, apisDir: string): boolean {
 }
 
 /**
- * Resolves a `new-operation` intent's user-supplied `location` (a folder path
+ * Resolves a `new-operation`/`build-api` intent's user-supplied `location` (a folder path
  * under `apisDir`, e.g. `"billing"` or `"billing/charges"`) to the directory
  * the new operation file should be created in. An empty string or `"default"`
  * both mean "the default API".
@@ -123,13 +123,13 @@ export class AgentRunManager {
       );
     }
 
-    // `new-operation` creates a brand-new flow, so there's no existing
-    // flowId to validate against pathOf — it validates `location` instead.
-    // `setup-auth` targets an environment, not a flow file, and
+    // `new-operation` and `build-api` create brand-new flows, so there's no
+    // existing flowId to validate against pathOf — both validate `location`
+    // instead. `setup-auth` targets an environment, not a flow file, and
     // `setup-environments` targets the environments file itself, so
     // neither has a relPath to resolve.
     let relPath: string;
-    if (intent.action === 'new-operation') {
+    if (intent.action === 'new-operation' || intent.action === 'build-api') {
       const dir = resolveLocationDir(intent.location);
       if (!isSafeLocationDir(dir, this.apisDir)) {
         throw new AgentStartError('Invalid location', 400);

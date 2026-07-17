@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { iterationSummary, projectRunbook } from './runbookProjection';
+import { iterationSummary, projectRunbook, runProvenance, runSourceLabel } from './runbookProjection';
 import { buildRunbook, type RunbookDoc, type RunbookItem } from './runbookModel';
 import { NodeRegistry, type ExecutionRecord, type LogLine, type WorkflowDefinition, type WorkflowRun } from '../engine';
 import type { RunHistoryEntry } from '../store/builderStore';
@@ -456,5 +456,57 @@ describe('iterationSummary', () => {
   it('summarizes an empty/missing output as an empty field list', () => {
     const exec: ExecutionRecord = { iteration: { index: 0, total: 2 }, status: 'succeeded' };
     expect(iterationSummary(exec)).toBe('→ out[]');
+  });
+});
+
+describe('runSourceLabel', () => {
+  it('says example data for mock runs and names the environment otherwise', () => {
+    expect(runSourceLabel(true, 'dev')).toBe('on example data — nothing real executed');
+    expect(runSourceLabel(false, 'dev')).toBe('against dev');
+    expect(runSourceLabel(false, '')).toBe('against the default environment');
+  });
+});
+
+describe('runProvenance', () => {
+  function makeRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+    return {
+      id: 'run-1',
+      workflowId: FLOW_ID,
+      status: 'succeeded',
+      startedAt: new Date().toISOString(),
+      nodeStates: {},
+      ...overrides,
+    };
+  }
+
+  it('falls back to the live mock/environment flags for the live run (no history entry yet)', () => {
+    const run = makeRun({ id: 'live-run' });
+    expect(runProvenance(run, undefined, true, 'prod')).toEqual({ mock: true, environment: 'prod' });
+    expect(runProvenance(run, undefined, false, 'staging')).toEqual({ mock: false, environment: 'staging' });
+  });
+
+  it('reports mock:true for a historical mocked run even while the live session is now on prod', () => {
+    // Repro: run in mock mode, switch env to prod, run for real, then open
+    // the OLD mocked run from history — the footer must still say mocked,
+    // not "against prod".
+    const run = makeRun({ id: 'old-mocked-run' });
+    const historyEntry: RunHistoryEntry = { ...run, mock: true };
+    expect(runProvenance(run, historyEntry, /* liveMock */ false, /* liveEnvironment */ 'prod')).toEqual({
+      mock: true,
+      environment: 'prod', // no environment recorded on the mock run itself — falls back to live
+    });
+  });
+
+  it('uses the historical real run\'s own recorded environment, not the live selection', () => {
+    const run = makeRun({ id: 'old-real-run', environment: 'staging' });
+    const historyEntry: RunHistoryEntry = { ...run };
+    expect(runProvenance(run, historyEntry, /* liveMock */ false, /* liveEnvironment */ 'prod')).toEqual({
+      mock: false,
+      environment: 'staging',
+    });
+  });
+
+  it('returns the live flags when there is no run to display', () => {
+    expect(runProvenance(null, undefined, true, 'dev')).toEqual({ mock: true, environment: 'dev' });
   });
 });

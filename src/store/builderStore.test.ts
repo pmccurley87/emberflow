@@ -756,6 +756,512 @@ describe('builderStore agent picker', () => {
       expect.anything(),
     );
   });
+
+  it('on agent run finish, fetches a scenario verdict for each touched operation', async () => {
+    vi.mocked(serverRunner.testWorkflow).mockReset().mockResolvedValue({ results: [], passed: 2, failed: 0, skipped: 0 });
+    vi.mocked(serverRunner.runnerHealthy).mockReset().mockResolvedValue({ online: true, mock: true });
+    vi.mocked(serverRunner.fetchWorkflows).mockReset().mockResolvedValue(null);
+    vi.mocked(agentClient.fetchAgentDiff)
+      .mockReset()
+      .mockResolvedValue({ diff: 'd', files: ['emberflow/apis/billing/charge.json'] });
+    let onDone: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, onEvent) => {
+        onDone = onEvent;
+        return () => {};
+      });
+
+    await useBuilderStore.getState().runAgent({ action: 'edit-flow', flowId: 'f1', instruction: 'go' });
+    onDone?.({ type: 'done' });
+
+    // finish('done') runs its async work off the synchronous event callback.
+    await vi.waitFor(() => {
+      expect(useBuilderStore.getState().agentRun?.verdicts?.['billing/charge']).toBeDefined();
+    });
+
+    expect(useBuilderStore.getState().agentRun?.verdicts?.['billing/charge']).toEqual({
+      results: [],
+      passed: 2,
+      failed: 0,
+      skipped: 0,
+    });
+
+    // Safety regression guard: this fetch is automatic (no user click), so it
+    // must always run in mock mode — never touch real infrastructure/secrets.
+    expect(vi.mocked(serverRunner.testWorkflow)).toHaveBeenCalledWith('billing/charge', undefined, true);
+  });
+
+  it('startAgent-catch does not clobber a different, still-running agentRun slot', async () => {
+    // Seed a live run in slot A.
+    useBuilderStore.setState({
+      agentRun: { id: 'run-A', events: [], status: 'running' },
+    });
+    vi.mocked(agentClient.startAgent).mockClear().mockRejectedValueOnce(new Error('boom'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // A second, unrelated runAgent call fails to start — this must not
+    // stomp the still-running run-A slot with an 'error' state (the T4
+    // ledgered race: a start failure racing a live run).
+    await useBuilderStore.getState().runAgent({ action: 'edit-flow', flowId: 'f2', instruction: 'go' });
+
+    expect(useBuilderStore.getState().agentRun).toEqual({ id: 'run-A', events: [], status: 'running' });
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+});
+
+describe('mid-run steering', () => {
+  beforeEach(() => {
+    vi.mocked(agentClient.startAgent).mockClear().mockResolvedValue('run-1');
+    vi.mocked(serverRunner.fetchWorkflows).mockReset().mockResolvedValue(null);
+    vi.mocked(serverRunner.runnerHealthy).mockReset().mockResolvedValue({ online: true, mock: true });
+    vi.mocked(agentClient.fetchAgentDiff).mockReset().mockResolvedValue({ diff: '', files: [] });
+    useBuilderStore.setState({ agentChoice: {}, agentRun: null, steerQueue: null });
+  });
+
+  it('queueSteer during a running agent run holds the text and dispatches it as the next run on finish', async () => {
+    let onEvent: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEvent = handler;
+        return () => {};
+      });
+
+    await useBuilderStore.getState().runAgent({ action: 'edit-flow', flowId: 'f1', instruction: 'go' });
+    expect(useBuilderStore.getState().agentRun?.status).toBe('running');
+
+    useBuilderStore.getState().queueSteer('also add rate limiting');
+    expect(useBuilderStore.getState().steerQueue).toBe('also add rate limiting');
+
+    onEvent?.({ type: 'done' });
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(agentClient.startAgent).mock.calls.length).toBe(2);
+    });
+
+    expect(vi.mocked(agentClient.startAgent).mock.calls[1][0]).toEqual({
+      action: 'edit-flow',
+      flowId: 'f1',
+      instruction: 'also add rate limiting',
+    });
+    expect(useBuilderStore.getState().steerQueue).toBeNull();
+  });
+
+  it('steer queued during a build-api run re-dispatches via buildApi, restoring buildingApiLocation', async () => {
+    let onEvent: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEvent = handler;
+        return () => {};
+      });
+
+    await useBuilderStore.getState().runAgent({ action: 'build-api', location: 'billing', instruction: 'build it' });
+    expect(useBuilderStore.getState().agentRun?.status).toBe('running');
+
+    useBuilderStore.getState().queueSteer('also add refunds');
+    onEvent?.({ type: 'done' });
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(agentClient.startAgent).mock.calls.length).toBe(2);
+    });
+
+    expect(vi.mocked(agentClient.startAgent).mock.calls[1][0]).toEqual({
+      action: 'build-api',
+      location: 'billing',
+      instruction: 'Continuing the same build. The user added while you worked: also add refunds',
+    });
+    expect(useBuilderStore.getState().steerQueue).toBeNull();
+    // The continuation must go through buildApi (not a raw runAgent) so the
+    // holding view/canvas-follow state is re-armed for the follow-up run —
+    // finish() clears buildingApiLocation, but the dispatch above should have
+    // set it right back.
+    expect(useBuilderStore.getState().buildingApiLocation).toBe('billing');
+  });
+
+  it('prefixes the follow-up instruction with failure context when the finished run errored', async () => {
+    let onEvent: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEvent = handler;
+        return () => {};
+      });
+
+    await useBuilderStore.getState().runAgent({ action: 'edit-flow', flowId: 'f1', instruction: 'go' });
+    useBuilderStore.getState().queueSteer('try a different approach');
+    onEvent?.({ type: 'error', text: 'boom' });
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(agentClient.startAgent).mock.calls.length).toBe(2);
+    });
+
+    expect(vi.mocked(agentClient.startAgent).mock.calls[1][0]).toEqual({
+      action: 'edit-flow',
+      flowId: 'f1',
+      instruction: 'The previous attempt failed partway. try a different approach',
+    });
+  });
+
+  it('dispatches a setup-environments follow-up (with failure prefix) instead of dropping the queued steer', async () => {
+    let onEvent: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEvent = handler;
+        return () => {};
+      });
+
+    await useBuilderStore.getState().runAgent({ action: 'setup-environments', instruction: 'set up dev + prod' });
+    useBuilderStore.getState().queueSteer('also add a staging env');
+    onEvent?.({ type: 'done' });
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(agentClient.startAgent).mock.calls.length).toBe(2);
+    });
+
+    expect(vi.mocked(agentClient.startAgent).mock.calls[1][0]).toEqual({
+      action: 'setup-environments',
+      instruction: 'also add a staging env',
+    });
+    expect(useBuilderStore.getState().steerQueue).toBeNull();
+  });
+
+  it('queueSteer with an empty/whitespace string clears the queue', () => {
+    useBuilderStore.setState({ steerQueue: 'pending text' });
+    useBuilderStore.getState().queueSteer('   ');
+    expect(useBuilderStore.getState().steerQueue).toBeNull();
+  });
+
+  it('queueSteer appends to an existing queue instead of replacing it', () => {
+    useBuilderStore.setState({ steerQueue: null });
+    useBuilderStore.getState().queueSteer('first note');
+    expect(useBuilderStore.getState().steerQueue).toBe('first note');
+    useBuilderStore.getState().queueSteer('second note');
+    expect(useBuilderStore.getState().steerQueue).toBe('first note\nsecond note');
+  });
+
+  it('a steer queued during an ask run scoped to a flow dispatches an edit-flow follow-up', async () => {
+    let onEvent: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEvent = handler;
+        return () => {};
+      });
+
+    await useBuilderStore.getState().runAgent({ action: 'ask', flowId: 'f1', instruction: 'what does this do?' });
+    useBuilderStore.getState().queueSteer('now add rate limiting');
+    onEvent?.({ type: 'done' });
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(agentClient.startAgent).mock.calls.length).toBe(2);
+    });
+
+    expect(vi.mocked(agentClient.startAgent).mock.calls[1][0]).toEqual({
+      action: 'edit-flow',
+      flowId: 'f1',
+      instruction: 'now add rate limiting',
+    });
+    expect(useBuilderStore.getState().steerQueue).toBeNull();
+  });
+
+  it('a steer queued during a flowId-less ask run is preserved, not dropped, on finish', async () => {
+    let onEvent: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEvent = handler;
+        return () => {};
+      });
+
+    await useBuilderStore.getState().runAgent({ action: 'ask', instruction: 'what does this project do?' });
+    useBuilderStore.getState().queueSteer('now add rate limiting');
+    onEvent?.({ type: 'done' });
+
+    // No obvious continuation target for a flowId-less ask — only the
+    // original run's startAgent call should have happened, and the queued
+    // text must survive rather than being silently cleared.
+    await vi.waitFor(() => {
+      expect(useBuilderStore.getState().agentRun?.status).toBe('done');
+    });
+    expect(vi.mocked(agentClient.startAgent).mock.calls.length).toBe(1);
+    expect(useBuilderStore.getState().steerQueue).toBe('now add rate limiting');
+  });
+
+  it('a preserved steerQueue from a flowId-less ask does not leak into a later unrelated run', async () => {
+    let onEventA: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEventA = handler;
+        return () => {};
+      });
+
+    // Run A: flowId-less ask, with a queued steer that has no continuation
+    // target — finish() preserves it (see test above).
+    await useBuilderStore.getState().runAgent({ action: 'ask', instruction: 'what does this project do?' });
+    useBuilderStore.getState().queueSteer('now add rate limiting');
+    onEventA?.({ type: 'done' });
+    await vi.waitFor(() => {
+      expect(useBuilderStore.getState().agentRun?.status).toBe('done');
+    });
+    expect(useBuilderStore.getState().steerQueue).toBe('now add rate limiting');
+
+    // Run B: an unrelated run started from any launch button (edit-flow on a
+    // different flow). The stale queue from run A must not survive into it.
+    let onEventB: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEventB = handler;
+        return () => {};
+      });
+    vi.mocked(agentClient.startAgent).mockClear().mockResolvedValue('run-2');
+
+    const runBPromise = useBuilderStore.getState().runAgent({ action: 'edit-flow', flowId: 'f2', instruction: 'go' });
+    // Cleared synchronously at the top of runAgent, before B's own startAgent
+    // call resolves.
+    expect(useBuilderStore.getState().steerQueue).toBeNull();
+    await runBPromise;
+
+    onEventB?.({ type: 'done' });
+    await vi.waitFor(() => {
+      expect(useBuilderStore.getState().agentRun?.status).toBe('done');
+    });
+
+    // B's finish() must not dispatch a follow-up from A's stale text: only
+    // B's own startAgent call happened.
+    expect(vi.mocked(agentClient.startAgent).mock.calls.length).toBe(1);
+    expect(vi.mocked(agentClient.startAgent).mock.calls[0][0]).toEqual({
+      action: 'edit-flow',
+      flowId: 'f2',
+      instruction: 'go',
+    });
+    expect(useBuilderStore.getState().steerQueue).toBeNull();
+  });
+});
+
+describe('builderStore buildApi', () => {
+  beforeEach(() => {
+    vi.mocked(agentClient.startAgent).mockClear().mockResolvedValue('run-1');
+    vi.mocked(serverRunner.createOperationOnServer).mockClear();
+    useBuilderStore.setState({ agentChoice: {}, agentRun: null, buildingApiLocation: null });
+  });
+
+  it('sets buildingApiLocation and commissions a build-api run — no stub operation is pre-created', () => {
+    useBuilderStore.getState().buildApi({ location: 'billing', goal: 'draft, send, and track invoices' });
+
+    expect(useBuilderStore.getState().buildingApiLocation).toBe('billing');
+    expect(agentClient.startAgent).toHaveBeenCalledWith(
+      { action: 'build-api', location: 'billing', instruction: 'draft, send, and track invoices' },
+      expect.anything(),
+    );
+    // The whole point vs createAndBuild: the agent owns the surface, so no
+    // stub is stood up before the run.
+    expect(serverRunner.createOperationOnServer).not.toHaveBeenCalled();
+  });
+});
+
+describe('builderStore build ledger', () => {
+  const opFlow = (id: string, name: string): WorkflowDefinition => ({
+    id,
+    name,
+    version: 1,
+    nodes: [],
+    edges: [],
+    createdAt: '2026-07-02T00:00:00Z',
+    updatedAt: '2026-07-02T00:00:00Z',
+  });
+  const payload = (flows: WorkflowDefinition[]): serverRunner.WorkflowsPayload => ({ flows, operations: [] });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(agentClient.startAgent).mockClear().mockResolvedValue('run-1');
+    vi.mocked(serverRunner.fetchWorkflows).mockReset();
+    vi.mocked(serverRunner.runnerHealthy).mockReset().mockResolvedValue({ online: true, mock: true });
+    vi.mocked(agentClient.fetchAgentDiff).mockReset().mockResolvedValue({ diff: '', files: [] });
+    useBuilderStore.setState({
+      agentChoice: {},
+      agentRun: null,
+      buildingApiLocation: null,
+      buildLedger: null,
+      flow: opFlow('other/root', 'Other'),
+      shelf: [],
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('marks ops building/done tick by tick, then all done on finish, cleared only when the next run starts', async () => {
+    let onEvent: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEvent = handler;
+        return () => {};
+      });
+
+    // Tick 1: baseline — op A is already there when the location comes into
+    // view (e.g. a pre-existing op). It seeds prevSerialized but writes no
+    // ledger entry.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('other/root', 'Other'), opFlow('goinsights/a', 'A v1')]),
+    );
+
+    useBuilderStore.setState({ buildingApiLocation: 'goinsights' });
+    await useBuilderStore
+      .getState()
+      .runAgent({ action: 'build-api', location: 'goinsights', instruction: 'build it' });
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useBuilderStore.getState().buildLedger).toEqual({});
+
+    // Tick 2: op A is unchanged (still no entry — it was never 'building'),
+    // op B is new since the baseline tick.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('other/root', 'Other'), opFlow('goinsights/a', 'A v1'), opFlow('goinsights/b', 'B v1')]),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useBuilderStore.getState().buildLedger).toEqual({
+      'goinsights/b': 'building',
+    });
+
+    // Tick 3: op B is unchanged since tick 2 (was 'building') -> 'done'.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('other/root', 'Other'), opFlow('goinsights/a', 'A v1'), opFlow('goinsights/b', 'B v1')]),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useBuilderStore.getState().buildLedger).toEqual({
+      'goinsights/b': 'done',
+    });
+
+    // Finish: everything flips to done, and stays around (not cleared).
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValue(null);
+    onEvent?.({ type: 'done' });
+    await vi.waitFor(() => {
+      expect(useBuilderStore.getState().agentRun?.status).toBe('done');
+    });
+    expect(useBuilderStore.getState().buildLedger).toEqual({
+      'goinsights/b': 'done',
+    });
+
+    // A new run clears the ledger at the start, before any poll tick lands.
+    await useBuilderStore.getState().runAgent({ action: 'edit-flow', flowId: 'other/root', instruction: 'go' });
+    expect(useBuilderStore.getState().buildLedger).toBeNull();
+  });
+
+  it('a pre-existing op under the location is not misclassified as building, but IS tracked once the agent edits it', async () => {
+    let onEvent: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEvent = handler;
+        return () => {};
+      });
+
+    // Tick 1 (baseline): 'goinsights/existing' predates this run (e.g. the
+    // CommandBar building into a location that already has ops).
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('goinsights/existing', 'Existing v1')]),
+    );
+    useBuilderStore.setState({ buildingApiLocation: 'goinsights' });
+    await useBuilderStore
+      .getState()
+      .runAgent({ action: 'build-api', location: 'goinsights', instruction: 'build it' });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useBuilderStore.getState().buildLedger).toEqual({});
+
+    // Tick 2: the agent adds a brand-new op. The pre-existing op is still
+    // unchanged and untouched — only the new op is 'building'.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('goinsights/existing', 'Existing v1'), opFlow('goinsights/new', 'New v1')]),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useBuilderStore.getState().buildLedger).toEqual({
+      'goinsights/new': 'building',
+    });
+
+    // Tick 3: the agent now edits the pre-existing op — its serialized form
+    // changes, so it becomes 'building'. The new op is unchanged since tick
+    // 2 (was 'building') -> 'done'.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('goinsights/existing', 'Existing v2'), opFlow('goinsights/new', 'New v1')]),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useBuilderStore.getState().buildLedger).toEqual({
+      'goinsights/existing': 'building',
+      'goinsights/new': 'done',
+    });
+
+    // Tick 4: the pre-existing op is unchanged since tick 3 (was 'building')
+    // -> 'done'.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('goinsights/existing', 'Existing v2'), opFlow('goinsights/new', 'New v1')]),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useBuilderStore.getState().buildLedger).toEqual({
+      'goinsights/existing': 'done',
+      'goinsights/new': 'done',
+    });
+
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValue(null);
+    onEvent?.({ type: 'done' });
+    await vi.waitFor(() => {
+      expect(useBuilderStore.getState().agentRun?.status).toBe('done');
+    });
+  });
+
+  it('an error finish drops still-building entries but keeps already-done ones', async () => {
+    let onEvent: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEvent = handler;
+        return () => {};
+      });
+
+    // Tick 1 (baseline). pollOnce bails out early on an empty flows array, so
+    // this needs at least one flow (outside the built location) to reach the
+    // ledger-seeding code.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(payload([opFlow('other/root', 'Other')]));
+    useBuilderStore.setState({ buildingApiLocation: 'goinsights' });
+    await useBuilderStore
+      .getState()
+      .runAgent({ action: 'build-api', location: 'goinsights', instruction: 'build it' });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // Tick 2: op A appears (new -> building), op B appears (new -> building).
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('goinsights/a', 'A v1'), opFlow('goinsights/b', 'B v1')]),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // Tick 3: op A settles (unchanged -> done). Op B is still being edited
+    // (changed -> stays building).
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('goinsights/a', 'A v1'), opFlow('goinsights/b', 'B v2')]),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useBuilderStore.getState().buildLedger).toEqual({
+      'goinsights/a': 'done',
+      'goinsights/b': 'building',
+    });
+
+    // The agent run errors out mid-edit of op B.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValue(null);
+    onEvent?.({ type: 'error', text: 'boom' });
+    await vi.waitFor(() => {
+      expect(useBuilderStore.getState().agentRun?.status).toBe('error');
+    });
+    expect(useBuilderStore.getState().buildLedger).toEqual({
+      'goinsights/a': 'done',
+    });
+  });
 });
 
 describe('builderStore guided setup transcript', () => {
@@ -1572,5 +2078,61 @@ describe('builderStore subflow step drill-in', () => {
     expect(s.run?.id).toBe('run-d');
     expect(s.run?.workflowId).toBe('parent');
     expect(s.runHistory[0]?.id).toBe('run-d');
+  });
+});
+
+describe('builderStore.askAboutFailure', () => {
+  beforeEach(() => {
+    vi.mocked(agentClient.startAgent).mockClear().mockResolvedValue('run-1');
+    useBuilderStore.setState({
+      agentChoice: {},
+      agentRun: null,
+      agentPanelOpen: false,
+      flow: {
+        id: 'billing/charge',
+        name: 'Charge',
+        version: 1,
+        nodes: [
+          { id: 'x', type: 'Noop', label: 'Charge card', position: { x: 0, y: 0 }, config: {} },
+        ],
+        edges: [],
+        createdAt: '2026-07-13T00:00:00Z',
+        updatedAt: '2026-07-13T00:00:00Z',
+      },
+      run: {
+        id: 'run-1',
+        workflowId: 'billing/charge',
+        status: 'failed',
+        startedAt: '2026-07-13T00:00:00Z',
+        nodeStates: { x: { status: 'failed', error: 'boom' } },
+      },
+    });
+  });
+
+  it('composes an ask instruction from the failed node + error and opens the agent panel', () => {
+    useBuilderStore.getState().askAboutFailure('x');
+
+    expect(useBuilderStore.getState().agentPanelOpen).toBe(true);
+    expect(agentClient.startAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'ask',
+        flowId: 'billing/charge',
+        instruction: expect.stringContaining('id: x'),
+      }),
+      expect.anything(),
+    );
+    const instruction = vi.mocked(agentClient.startAgent).mock.calls[0][0] as { instruction: string };
+    expect(instruction.instruction).toContain('Charge card');
+    expect(instruction.instruction).toContain('boom');
+  });
+
+  it('does not start a new agent run while one is already running', () => {
+    useBuilderStore.setState({
+      agentRun: { id: 'run-existing', status: 'running', events: [] },
+    });
+
+    useBuilderStore.getState().askAboutFailure('x');
+
+    expect(agentClient.startAgent).not.toHaveBeenCalled();
   });
 });

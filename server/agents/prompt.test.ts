@@ -96,6 +96,29 @@ describe('buildPrompt', () => {
     expect(prompt).toMatch(/ create <id>/i);
   });
 
+  it('build-api: owns the whole API surface — design judgment, one-at-a-time creation, the create CLI lines, and a finish summary', () => {
+    const intent: AgentIntent = {
+      action: 'build-api',
+      location: 'billing',
+      instruction: 'Manage customer invoices — draft, send, and track payment.',
+    };
+
+    const prompt = buildPrompt(intent, 'flows', 'billing');
+
+    expect(prompt).toContain(intent.instruction);
+    expect(prompt).toContain('flows/billing');
+    // The agent designs the surface: how many operations, named what, HTTP vs internal.
+    expect(prompt).toContain('API SURFACE');
+    expect(prompt).toContain('YOUR design judgment');
+    // Operations are created + finished one at a time so the studio shows them landing live.
+    expect(prompt).toContain('ONE AT A TIME');
+    // Both create-CLI shapes: HTTP endpoint and internal sub-flow.
+    expect(prompt).toMatch(/create billing\/<slug> --method <METHOD> --path <\/route>/);
+    expect(prompt).toMatch(/create billing\/<slug> --name "<Display Name>"/);
+    // The finish summary is what the studio turns into open buttons — exact ids matter.
+    expect(prompt).toMatch(/FINISH with a one-line-per-operation summary/);
+  });
+
   it('new-operation: resolves the default location to the "default" apis dir', () => {
     const prompt = buildPrompt(
       { action: 'new-operation', location: '', instruction: 'Send a welcome email on signup.' },
