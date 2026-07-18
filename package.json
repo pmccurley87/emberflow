@@ -1,6 +1,6 @@
 {
   "name": "@xdelivered/emberflow",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "type": "module",
   "description": "Visual builder and runner for API operations modelled as node graphs, with scenarios, mocks and agent skills.",
   "keywords": [

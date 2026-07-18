@@ -18,17 +18,21 @@ export const EMPTY_STATE_DISMISSED_KEY = 'emberflow.emptyState.dismissed';
 export function EmptyState({
   status,
   dismissed,
+  noOps = false,
   onCreate,
   onExplore,
 }: {
   status: SetupStatus | null;
   dismissed: boolean;
+  /** The workspace has zero operations (everything was deleted) — always show,
+   *  ignoring dismissal, and hide the explore link (no hello example exists). */
+  noOps?: boolean;
   /** Opens the same New API modal as the sidebar's button (store's createModal). */
   onCreate: () => void;
   /** Records the dismissal and opens the hello example. */
   onExplore: () => void;
 }) {
-  if (!status?.ops.onlyHello || dismissed) return null;
+  if (!noOps && (!status?.ops.onlyHello || dismissed)) return null;
   return (
     <div className="flex h-full min-h-0 items-center justify-center p-8">
       <div className="flex max-w-md flex-col items-center gap-3 text-center">
@@ -48,13 +52,15 @@ export function EmptyState({
             Start from a template
           </Button>
         </div>
-        <button
-          type="button"
-          onClick={onExplore}
-          className="mt-1 text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-        >
-          Explore the hello example
-        </button>
+        {!noOps && (
+          <button
+            type="button"
+            onClick={onExplore}
+            className="mt-1 text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            Explore the hello example
+          </button>
+        )}
       </div>
     </div>
   );

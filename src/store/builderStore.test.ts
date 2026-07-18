@@ -317,6 +317,23 @@ describe('builderStore runner sync', () => {
     expect([state.flow, ...state.shelf].map((f) => f.id).sort()).toEqual(['srv-a', 'srv-b']);
   });
 
+  it('syncFromRunner adopts an EMPTY server workspace (last op deleted) instead of keeping stale flows', async () => {
+    // Adopt a populated workspace first, then the server reports zero flows —
+    // the regression was an early return that left the deleted op on screen.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValue(payload([serverFlow('srv-a', 'Server A')]));
+    await useBuilderStore.getState().syncFromRunner();
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValue(payload([]));
+
+    await useBuilderStore.getState().syncFromRunner();
+
+    const state = useBuilderStore.getState();
+    expect(state.workspaceSource).toBe('server');
+    expect(state.workflows).toEqual([]);
+    expect(state.shelf).toEqual([]);
+    expect(state.flow.id).toBe('__empty-workspace__');
+    expect(state.flow.nodes).toEqual([]);
+  });
+
   it('syncFromRunner leaves the workspace alone when the runner returns null', async () => {
     const before = useBuilderStore.getState().flow.id;
     vi.mocked(serverRunner.fetchWorkflows).mockResolvedValue(null);

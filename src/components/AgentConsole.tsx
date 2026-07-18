@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowRightIcon, ArrowUpIcon, ChevronRightIcon, FileTextIcon, SparklesIcon, XIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -156,6 +156,25 @@ export function AgentConsole({ onDismiss }: { onDismiss: () => void }) {
     return () => cancelAnimationFrame(r);
   }, []);
 
+  // Follow the stream: while the run is live, keep the newest event in view by
+  // scrolling to the bottom as content arrives — but only while the user is
+  // already at (or near) the bottom. Scrolling up to reread pins the view
+  // there; returning to the bottom re-engages the follow.
+  const streamRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+  const eventCount = agentRun?.events.length ?? 0;
+  // A fresh run always starts followed, wherever the last one left the scroll.
+  useEffect(() => {
+    stickToBottom.current = true;
+  }, [agentRun?.id]);
+  useEffect(() => {
+    const el = streamRef.current;
+    if (!el || !stickToBottom.current) return;
+    const reduceMotion =
+      typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    el.scrollTo({ top: el.scrollHeight, behavior: reduceMotion ? 'auto' : 'smooth' });
+  }, [eventCount, agentRun?.status, agentRun?.verdicts]);
+
   const send = () => {
     const text = instruction.trim();
     if (!text) return;
@@ -217,7 +236,15 @@ export function AgentConsole({ onDismiss }: { onDismiss: () => void }) {
         </Button>
       </header>
 
-      <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3.5 py-3">
+      <div
+        ref={streamRef}
+        onScroll={() => {
+          const el = streamRef.current;
+          if (!el) return;
+          stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+        }}
+        className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3.5 py-3"
+      >
         {/* Your message — the instruction you sent, shown first like a chat. */}
         {agentRun?.instruction && (
           <div className="mb-1 flex justify-end">

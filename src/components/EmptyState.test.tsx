@@ -41,6 +41,15 @@ describe('EmptyState', () => {
     expect(html(null)).toBe('');
   });
 
+  it('noOps: renders regardless of status/dismissal, without the explore link', () => {
+    const out = renderToStaticMarkup(
+      <EmptyState status={null} dismissed={true} noOps onCreate={() => {}} onExplore={() => {}} />,
+    );
+    expect(out).toContain('Build your first API');
+    expect(out).toContain('Create your first API');
+    expect(out).not.toContain('Explore the hello example');
+  });
+
   it('the template button is disabled and marked coming soon', () => {
     const out = html(ONLY_HELLO);
     expect(out).toMatch(/disabled=""[^>]*title="Coming soon"|title="Coming soon"[^>]*disabled=""/);

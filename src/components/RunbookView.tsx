@@ -9,9 +9,6 @@ import type { RunbookBranchGroup, RunbookItem, RunbookLoopGroup, RunbookStep } f
 import { iterationSummary, projectRunbook, runProvenance, runSourceLabel } from '../lib/runbookProjection';
 import type { RunbookProjection, StepVisualStatus } from '../lib/runbookProjection';
 import type {WorkflowRun } from '../engine';
-import type { ScenarioDefinition } from '../engine/types';
-import type { ScenarioTestReport } from '../store/serverRunner';
-import { ScenarioStrip } from './ScenarioStrip';
 
 function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
@@ -699,7 +696,10 @@ function BranchGroupRow({ group, ctx }: { group: RunbookBranchGroup; ctx: Runboo
   };
 
   return (
-    <div className="py-0.5">
+    // Indented one level: an arm group is a child of the deciding step above
+    // it (numbered `${owner}.N` — see numberItems in runbookModel.ts), so it
+    // renders inset under that step rather than as another root-level row.
+    <div className="ml-[54px] py-0.5">
       <div
         role="button"
         tabIndex={0}
@@ -869,9 +869,6 @@ function RunbookHeader({
   expandAll,
   onToggleExpandAll,
   crumbs,
-  scenarios,
-  scenarioReport,
-  onRunScenario,
 }: {
   name: string;
   environment?: string;
@@ -881,12 +878,6 @@ function RunbookHeader({
   /** Step-drill trail, root first — rendered above the title while a stepped
    *  run is inside a subflow. Ancestor clicks are a view-only peek. */
   crumbs?: DrillCrumb[];
-  /** The displayed flow's own scenarios — a drilled child view carries its
-   *  own `scenarios` field (same `WorkflowDefinition` shape), so the strip
-   *  naturally follows drilling with no special-casing here. */
-  scenarios: ScenarioDefinition[];
-  scenarioReport: ScenarioTestReport | undefined;
-  onRunScenario: (scenarioId: string) => void;
 }) {
   return (
     <div className="mb-6">
@@ -931,7 +922,6 @@ function RunbookHeader({
           {expandAll ? <ChevronsDownUpIcon className="size-3.5" /> : <ChevronsUpDownIcon className="size-3.5" />}
         </button>
       </div>
-      <ScenarioStrip scenarios={scenarios} report={scenarioReport} onRun={onRunScenario} />
     </div>
   );
 }
@@ -1027,8 +1017,6 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
   const liveFlow = useBuilderStore((s) => s.flow);
   const registry = useBuilderStore((s) => s.registry);
   const buildingOperationId = useBuilderStore((s) => s.buildingOperationId);
-  const scenarioTestReports = useBuilderStore((s) => s.scenarioTestReports);
-  const runScenario = useBuilderStore((s) => s.runScenario);
   const buildingApiLocation = useBuilderStore((s) => s.buildingApiLocation);
   const liveRun = useBuilderStore((s) => s.run);
   const logs = useBuilderStore((s) => s.logs);
@@ -1212,9 +1200,6 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
             expandAll={expandAll}
             onToggleExpandAll={() => setExpandAll((v) => !v)}
             crumbs={crumbs}
-            scenarios={flow.scenarios ?? []}
-            scenarioReport={scenarioTestReports[flow.id]}
-            onRunScenario={runScenario}
           />
         )}
         {buildingApi ? (

@@ -44,6 +44,26 @@ describe('buildRunbook', () => {
       surplusGuards.find((g) => g.startsWith('condSolar:')));
   });
 
+  it('arm groups number and indent UNDER their owning step, not as its root siblings', () => {
+    // Regression: a three-arm decision at root numbered its arm headers 4/5/6
+    // (root rows) instead of 3.1/3.2/3.3 under step 3.
+    const doc = buildRunbook(flow('ev-evaluate-cycle'), registry);
+    const all = flat(doc.items);
+    for (const group of all.filter((i) => i.kind === 'branch')) {
+      const owner = all.find((i) => i.kind === 'step' && i.nodeId === group.ownerId);
+      expect(group.number.startsWith(`${owner.number}.`)).toBe(true);
+      expect(group.depth).toBe(owner.depth + 1);
+      // Direct step/loop children sit one level below the group; a nested
+      // branch child is instead owned by ITS deciding step (depth+1 from it).
+      for (const child of group.items.filter((c: any) => c.kind !== 'branch')) {
+        expect(child.depth).toBe(owner.depth + 2);
+      }
+    }
+    // Root numbering stays dense: no root-level number is consumed by an arm.
+    const topLevel = doc.items.filter((i) => i.kind !== 'branch');
+    topLevel.forEach((item, i) => expect(item.number).toBe(`${i + 1}`));
+  });
+
   it('numbers are hierarchical and unique', () => {
     const doc = buildRunbook(flow('ev-evaluate-cycle'), registry);
     const nums = flat(doc.items).map((i) => i.number);

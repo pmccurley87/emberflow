@@ -112,6 +112,7 @@ function CenterView() {
   const welcomeOpen = useBuilderStore((s) => s.welcomeOpen);
   const setCreateModal = useBuilderStore((s) => s.setCreateModal);
   const switchWorkflow = useBuilderStore((s) => s.switchWorkflow);
+  const workflows = useBuilderStore((s) => s.workflows);
   const buildingApiLocation = useBuilderStore((s) => s.buildingApiLocation);
   // Explicit dismissal of the post-onboarding empty state ("explore the
   // example" path). Building a second op dismisses it implicitly — onlyHello
@@ -127,6 +128,23 @@ function CenterView() {
     return (
       <div className="relative h-full min-h-0">
         <RunnerOfflinePanel />
+      </div>
+    );
+  }
+  // Zero operations left (everything deleted): the placeholder flow must never
+  // render as if it were a real op — show the empty state, undismissable, no
+  // explore link (the hello example is gone too). A live build-api run keeps
+  // the runbook's holding pattern instead.
+  if (workspaceSource === 'server' && workflows.length === 0 && !buildingApiLocation) {
+    return (
+      <div className="relative h-full min-h-0">
+        <EmptyState
+          status={setupStatus}
+          dismissed={false}
+          noOps
+          onCreate={() => setCreateModal({ mode: 'api' })}
+          onExplore={() => {}}
+        />
       </div>
     );
   }

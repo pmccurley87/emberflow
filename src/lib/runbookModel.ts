@@ -253,13 +253,36 @@ export function buildRunbook(flow: WorkflowDefinition, registry: NodeRegistry): 
 
   const rootItems = buildLevel(rootPool, [], rootGuardMap);
 
+  /**
+   * Numbers one level. Branch groups sit in the item array as SIBLINGS of the
+   * step that owns them (buildLevel pushes them right after it), but they read
+   * as that step's children — so they number and indent under it ("3" →
+   * "3.1 If invalid") instead of consuming root-level numbers. Without this, a
+   * three-arm decision turned rows 4/5/6 into arm headers and pushed the next
+   * real step to 7 — a wall of root rows where nesting was meant.
+   */
   function numberItems(items: RunbookItem[], prefix: string, depth: number): void {
-    items.forEach((item, i) => {
-      const number = prefix ? `${prefix}.${i + 1}` : `${i + 1}`;
+    let sibling = 0;
+    let owner: { number: string; nodeId: string; armCount: number } | null = null;
+    for (const item of items) {
+      if (item.kind === 'branch' && owner && item.ownerId === owner.nodeId) {
+        owner.armCount++;
+        item.number = `${owner.number}.${owner.armCount}`;
+        item.depth = depth + 1;
+        numberItems(item.items, item.number, depth + 2);
+        continue;
+      }
+      sibling++;
+      const number = prefix ? `${prefix}.${sibling}` : `${sibling}`;
       item.number = number;
       item.depth = depth;
-      if (item.kind !== 'step') numberItems(item.items, number, depth + 1);
-    });
+      if (item.kind === 'step') {
+        owner = { number, nodeId: item.nodeId, armCount: 0 };
+      } else {
+        owner = null;
+        numberItems(item.items, number, depth + 1);
+      }
+    }
   }
   numberItems(rootItems, '', 0);
 

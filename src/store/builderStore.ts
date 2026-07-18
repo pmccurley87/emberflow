@@ -493,6 +493,16 @@ function touched(flow: WorkflowDefinition): WorkflowDefinition {
   return { ...flow, updatedAt: new Date().toISOString() };
 }
 
+/** Placeholder for a server workspace with zero operations (everything was
+ *  deleted). `flow` is non-nullable across the store, so this stands in while
+ *  `workflows` is empty — CenterView swaps the canvas for the empty state, and
+ *  the CommandBar treats an empty `workflows` as "no current flow". */
+export const EMPTY_WORKSPACE_FLOW_ID = '__empty-workspace__';
+function emptyWorkspaceFlow(): WorkflowDefinition {
+  const now = new Date().toISOString();
+  return { id: EMPTY_WORKSPACE_FLOW_ID, name: 'No operations', version: 1, nodes: [], edges: [], createdAt: now, updatedAt: now };
+}
+
 function summaries(
   active: WorkflowDefinition,
   shelf: WorkflowDefinition[],
@@ -1066,7 +1076,28 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
 
     async syncFromRunner() {
       const payload = await fetchWorkflows();
-      if (!payload || payload.flows.length === 0) return;
+      if (!payload) return;
+      if (payload.flows.length === 0) {
+        // Every operation was deleted: reflect the truly-empty workspace
+        // (placeholder flow, no sidebar entries) so the canvas can show the
+        // empty state instead of a stale copy of the last-deleted op.
+        hydrating(() =>
+          set({
+            flow: emptyWorkspaceFlow(),
+            shelf: [],
+            opMeta: new Map(),
+            workflows: [],
+            workspaceSource: 'server',
+            run: null,
+            logs: [],
+            activeRun: null,
+            selectedNodeId: null,
+            stepDrill: [],
+            drillPeek: null,
+          }),
+        );
+        return;
+      }
       const { flows, operations } = payload;
       const opMeta: OpMeta = new Map(
         operations.map((op) => [op.id, { path: op.path, http: op.http }]),

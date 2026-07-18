@@ -75,9 +75,13 @@ export function CommandBar() {
   const buildApi = useBuilderStore((s) => s.buildApi);
   const openAgentPanel = useBuilderStore((s) => s.openAgentPanel);
   const agentRunning = useBuilderStore((s) => s.agentRun?.status === 'running');
+  // An empty workspace carries a placeholder flow (see emptyWorkspaceFlow in
+  // the store) — treat it as "no current flow" so edit/scenario routes never
+  // target it.
+  const currentFlow = workflows.length > 0 ? flow : null;
   const ctx: RouteContext = {
-    currentFlowId: flow?.id ?? null,
-    currentFlowName: flow?.name ?? null,
+    currentFlowId: currentFlow?.id ?? null,
+    currentFlowName: currentFlow?.name ?? null,
     hasOps: workflows.length > 0,
   };
 
@@ -104,9 +108,9 @@ export function CommandBar() {
     setText('');
     openAgentPanel();
     if (intent.kind === 'build') void buildApi({ location: 'default', goal: t });
-    else if (intent.kind === 'ask') void runAgent({ action: 'ask', flowId: flow?.id, instruction: t });
-    else if (intent.kind === 'scenario' && flow) void runAgent({ action: 'new-scenario', flowId: flow.id, instruction: t });
-    else if (flow) void runAgent({ action: 'edit-flow', flowId: flow.id, instruction: t });
+    else if (intent.kind === 'ask') void runAgent({ action: 'ask', flowId: currentFlow?.id, instruction: t });
+    else if (intent.kind === 'scenario' && currentFlow) void runAgent({ action: 'new-scenario', flowId: currentFlow.id, instruction: t });
+    else if (currentFlow) void runAgent({ action: 'edit-flow', flowId: currentFlow.id, instruction: t });
   };
 
   return (
