@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { RunOutcome, operationIdFromFile } from './AgentConsole';
+import { HistoryConversation, RunOutcome, operationIdFromFile } from './AgentConsole';
 
 describe('operationIdFromFile', () => {
   it('maps operation files to ids and rejects sidecars/meta/non-ops', () => {
@@ -66,5 +66,34 @@ describe('RunOutcome', () => {
     expect(out).toContain('1 failed');
     expect(out).toContain('declined-card');
     expect(out).toContain('expected 402, got 200');
+  });
+});
+
+describe('HistoryConversation', () => {
+  const run = {
+    id: 'h1',
+    action: 'edit-flow',
+    instruction: 'add rate limiting',
+    status: 'done' as const,
+    startedAt: '2026-07-19T10:00:00Z',
+    finishedAt: '2026-07-19T10:05:00Z',
+    events: [{ type: 'message' as const, text: 'Added a limiter node.' }],
+  };
+
+  it('collapsed: shows the user message and outcome meta, not the transcript', () => {
+    const out = renderToStaticMarkup(<HistoryConversation run={run} />);
+    expect(out).toContain('add rate limiting');
+    expect(out).toContain('completed');
+    expect(out).not.toContain('Added a limiter node.');
+  });
+
+  it('falls back to an action label when the run carried no instruction', () => {
+    const out = renderToStaticMarkup(<HistoryConversation run={{ ...run, instruction: '', action: 'build-api' }} />);
+    expect(out).toContain('Build this API');
+  });
+
+  it('failed runs read as failed', () => {
+    const out = renderToStaticMarkup(<HistoryConversation run={{ ...run, status: 'error' as const }} />);
+    expect(out).toContain('failed');
   });
 });

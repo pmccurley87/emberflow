@@ -496,6 +496,14 @@ export function StatusBar() {
             </span>
           </>
         )}
+        {updateStatus && (
+          <>
+            <Divider />
+            <span className={segment} title="Emberflow version">
+              <span className="shrink-0 font-mono text-muted-foreground/70">v{updateStatus.current}</span>
+            </span>
+          </>
+        )}
       </div>
       <InfrastructureDialog open={infraOpen} onOpenChange={setInfraOpen} data={infraData} />
     </footer>

@@ -30,8 +30,8 @@ import {
 import type {
   EnvAuth, ErrorHandlerTag, EnvironmentSummary, ScenarioTestReport, ServerRunOptions, StepResult,
 } from './serverRunner';
-import { cancelAgent, fetchAgentDiff, revertAgent, startAgent, streamAgent } from './agentClient';
-import type { AgentEvent, AgentIntent, AgentKind, StartAgentOptions } from './agentClient';
+import { cancelAgent, fetchAgentDiff, fetchAgentHistory, revertAgent, startAgent, streamAgent } from './agentClient';
+import type { AgentEvent, AgentHistoryRun, AgentIntent, AgentKind, StartAgentOptions } from './agentClient';
 import { fetchSetupStatus } from './setupClient';
 import type { SetupStatus } from './setupClient';
 import { extractGuidedQuestions } from '../lib/guidedQuestions';
@@ -359,6 +359,12 @@ interface BuilderState {
      *  mid-run — the phase derives from this flag + `status`. */
     guided?: boolean;
   } | null;
+  /** Persisted agent conversations for the OPEN flow (its runs + its API's
+   *  build runs), oldest first — refetched on flow switch and run finish so
+   *  returning to an operation re-shows its whole agent history. */
+  agentHistory: AgentHistoryRun[];
+  /** Refetch `agentHistory` for `flowId` (no-op set if the open flow moved on meanwhile). */
+  loadAgentHistory(flowId: string): Promise<void>;
   /** Prior guided-setup conversation (finished runs' events + the user's
    *  answers), preserved across continuation runs — each continuation REPLACES
    *  the agentRun slot, so without this the onboarding pane would wipe to
@@ -378,12 +384,6 @@ interface BuilderState {
    *  to its idle intro (Start setup) instead of auto-resuming an old stream.
    *  No-op while a guided run is live. */
   resetGuidedSetup(): void;
-  /**
-   * The operation currently being scaffolded by the create flow. Its stub is
-   * already selected; the canvas shows a "waiting for the agent" holding pattern
-   * until the agent finishes writing it. Cleared when the agent run completes.
-   */
-  buildingOperationId: string | null;
   /**
    * The API location (e.g. `"billing"`) whose surface a `build-api` agent run
    * is currently designing. No stub exists up front — the agent decides how
@@ -419,19 +419,6 @@ interface BuilderState {
    * appear in the sidebar live as the agent creates them.
    */
   buildApi(input: { location: string; goal: string }): void;
-  /**
-   * Create a stub operation (name + HTTP route) at `location`, select it so the
-   * canvas shows the shell immediately, then kick an `edit-flow` agent run to
-   * build out its logic. Powers the New API / New operation modal — the user
-   * sees what they're building before the agent fills it in.
-   */
-  createAndBuild(input: {
-    location: string;
-    name: string;
-    method: string;
-    httpPath: string;
-    goal: string;
-  }): Promise<{ ok: boolean; error?: string }>;
   /** Revert the agent run's file changes, then reload flows from the runner. */
   revertAgentRun(): Promise<void>;
   /** Hide the agent console without affecting the underlying run. */
@@ -924,8 +911,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     activeRunMock: false,
     scenarioTestPending: null,
     agentRun: null,
+    agentHistory: [],
     guidedTranscript: [],
-    buildingOperationId: null,
     buildingApiLocation: null,
     buildLedger: null,
     steerQueue: null,
@@ -1120,6 +1107,9 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
           drillPeek: null,
         }),
       );
+      // Adoption moved the open flow (initial connect, or the open op was
+      // deleted): load the newly-open flow's agent conversation history.
+      if (flow.id !== current) void get().loadAgentHistory(flow.id);
     },
 
     async createOperation(input) {
@@ -1175,26 +1165,6 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       return { ok: true };
     },
 
-    async createAndBuild(input) {
-      const { location, name, method, httpPath, goal } = input;
-      const parts = location.split('/').filter(Boolean);
-      const api = parts[0] || 'default';
-      const folder = parts.slice(1).join('/') || undefined;
-      // 1) Create the stub op (Input → Response + http trigger) and select it,
-      //    so the canvas shows the shell of what's being built right away.
-      const created = await get().createOperation({ api, folder, name, method, httpPath });
-      if (!created.ok) return created;
-      const stubId = `${api}/${folder ? `${folder}/` : ''}${slug(name)}`;
-      // 2) Flag the holding pattern, then hand the stub to the agent. Send the
-      //    user's goal verbatim (it shows as their message in the panel); the
-      //    edit-flow prompt already tells the agent to build the operation out.
-      set({ buildingOperationId: stubId });
-      // scaffold: this op is a placeholder-named shell — the agent's first step
-      // is to rename it properly, then build it out (see the edit-flow prompt).
-      void get().runAgent({ action: 'edit-flow', flowId: stubId, instruction: goal, scaffold: true });
-      return { ok: true };
-    },
-
     buildApi({ location, goal }) {
       // No stub: the agent owns the whole surface — how many operations, their
       // names, routes, and boundaries. The flag drives the canvas holding
@@ -1222,16 +1192,11 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       // marker on the run slot drives both the suppression here and the dialog's
       // phase machine (which re-attaches to this same slot when reopened).
       const guided = intent.action === 'guided-setup';
-      // If a build is in flight, remember the op being built + the op ids that
-      // existed before the run. If the agent renames the op (the id changes),
-      // syncFromRunner can't find the old id and falls back to flows[0], leaving
-      // the built op unselected — so we re-select the newly-added op on finish.
-      const buildingId = get().buildingOperationId;
       // A build-api run creates operations from nothing — remember the op ids
       // that existed before the run so the poll can spot the agent's new ops
       // under the location and point the canvas at the first of them.
       const buildingApiLoc = get().buildingApiLocation;
-      const priorIds = buildingId || buildingApiLoc
+      const priorIds = buildingApiLoc
         ? new Set([get().flow.id, ...get().shelf.map((f) => f.id)])
         : null;
       let agentRunId: string;
@@ -1352,9 +1317,6 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
           hydrating(() =>
             set({ flow, shelf, opMeta, workflows: summaries(flow, shelf, opMeta) }),
           );
-          // Once real nodes appear (beyond the Input→terminus stub), drop the
-          // holding pattern so the live canvas shows instead of "waiting…".
-          if (get().buildingOperationId && flow.nodes.length > 2) set({ buildingOperationId: null });
         } catch {
           // transient (partial read / runner blip) — next tick recovers
         }
@@ -1378,7 +1340,6 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
         // never got a 'done' tick — so it's dropped rather than shown as
         // built; already-'done' ops (completed before the failure) stay.
         set((s) => ({
-          buildingOperationId: null,
           buildingApiLocation: null,
           buildLedger: s.buildLedger
             ? status === 'done'
@@ -1395,13 +1356,6 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
           void get().checkRunner();
           try {
             await get().syncFromRunner();
-            // Keep the built op selected even if the agent renamed it: if the
-            // id we were building is gone, select whichever op is new since the
-            // run started (the rename target).
-            if (buildingId && get().flow.id !== buildingId) {
-              const added = [get().flow, ...get().shelf].find((f) => priorIds && !priorIds.has(f.id));
-              if (added) get().switchWorkflow(added.id);
-            }
             // build-api safety net: if the poll never landed a selection under
             // the built location (e.g. the run finished between ticks), point
             // the canvas at the first operation the agent created there.
@@ -1450,6 +1404,9 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
             );
           }
         }
+        // The finished run is persisted server-side by now — refresh the open
+        // flow's conversation history so the panel's past-runs list is current.
+        void get().loadAgentHistory(get().flow.id);
         // Steering: text queued while this run was live becomes the next run,
         // targeted at the same flow/location the user was just working. Runs
         // whose intent doesn't have an obvious continuation (guided-setup &
@@ -1742,6 +1699,12 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       });
     },
 
+    async loadAgentHistory(flowId) {
+      const runs = await fetchAgentHistory(flowId);
+      // The user may have moved on to another flow while this fetched.
+      if (get().flow.id === flowId) set({ agentHistory: runs });
+    },
+
     switchWorkflow(id) {
       // Switching flows while drilled would strand the stashed parent — put
       // the root level back first so flow/shelf are consistent again.
@@ -1768,6 +1731,9 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       if (switched) {
         revertUnsafeAfterRun();
         applyFlowEnvironment();
+        // Stale history must not flash under the new flow while fetching.
+        set({ agentHistory: [] });
+        void get().loadAgentHistory(id);
       }
     },
 

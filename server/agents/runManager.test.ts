@@ -82,6 +82,27 @@ describe('AgentRunManager', () => {
     expect(readFileSync(join(projectDir, 'flows', 'hello.json'), 'utf8')).not.toBe('agent was here\n');
   });
 
+  it('persists a finished run to its flow scope, survives a manager restart, and keeps transcripts out of git', async () => {
+    const manager = new AgentRunManager(projectDir, flowsDir, pathOf);
+    const id = manager.start(intent);
+    await collectUntilDone(manager, id);
+
+    const history = manager.history('hello');
+    expect(history).toHaveLength(1);
+    expect(history[0].id).toBe(id);
+    expect(history[0].instruction).toBe('do a thing');
+    expect(history[0].status).toBe('done');
+    expect(history[0].events[history[0].events.length - 1].type).toBe('done');
+
+    // A fresh manager (server restart) still reads the same conversations.
+    const fresh = new AgentRunManager(projectDir, flowsDir, pathOf);
+    expect(fresh.history('hello')).toHaveLength(1);
+
+    // Transcripts are self-gitignored so they never pollute run diffs.
+    expect(readFileSync(join(projectDir, 'agent-history', '.gitignore'), 'utf8')).toBe('*\n');
+    expect(git(projectDir, ['ls-files', '--others', '--exclude-standard'])).not.toContain('agent-history');
+  });
+
   it('rejects a second concurrent start while a run is active', async () => {
     const manager = new AgentRunManager(projectDir, flowsDir, pathOf);
 

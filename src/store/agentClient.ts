@@ -126,6 +126,29 @@ export interface AgentDiffResult {
 }
 
 /** GET /agent/:id/diff */
+/** One persisted agent conversation (mirrors server AgentHistoryRecord). */
+export interface AgentHistoryRun {
+  id: string;
+  action: string;
+  instruction: string;
+  status: 'done' | 'error';
+  startedAt: string;
+  finishedAt: string;
+  events: AgentEvent[];
+}
+
+/** GET /agent-history?flow=… — persisted conversations for one operation, oldest first. [] if unreachable. */
+export async function fetchAgentHistory(flowId: string): Promise<AgentHistoryRun[]> {
+  try {
+    const response = await fetch(`${BASE}/agent-history?flow=${encodeURIComponent(flowId)}`);
+    if (!response.ok) return [];
+    const { runs } = (await response.json()) as { runs: AgentHistoryRun[] };
+    return runs ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchAgentDiff(agentRunId: string): Promise<AgentDiffResult> {
   const response = await fetch(`${BASE}/agent/${agentRunId}/diff`);
   if (!response.ok) {

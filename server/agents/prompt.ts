@@ -390,18 +390,21 @@ export function buildPrompt(
         `1. DESIGN FIRST. Read what the goal models (existing code when it names some — the model-process skill's process-boundary rules apply; the infrastructure manifest above when present). Write ONE short message to the panel before creating anything: the operations you intend (id + one line each) and why those boundaries. Then build — do not wait for approval.`,
       );
       lines.push(
-        `2. CREATE EACH OPERATION with the CLI shell first, then build it out (same discipline as a single new operation — this is that recipe, repeated):`,
+        `2. LAY DOWN THE SURFACE AS PLACEHOLDERS. Immediately after the design message, create EVERY operation you planned as a bare CLI shell — name and route only, no logic yet:`,
       );
       lines.push(`     node ${EMBERFLOW_BIN} create ${relPath}/<slug> --method <METHOD> --path </route> --name "<Display Name>"   (HTTP endpoint)`);
       lines.push(`     node ${EMBERFLOW_BIN} create ${relPath}/<slug> --name "<Display Name>"                                       (internal sub-flow)`);
       lines.push(
-        `   Create operations ONE AT A TIME and finish each (logic nodes, mocks, scenarios, a passing run) before starting the next — the studio shows each one appearing and taking shape as you go, which is exactly the experience the user should have. Shared internal processes become their own internal operations called via Subflow nodes.`,
+        `   The studio lists each shell in the sidebar the moment it exists, so the whole planned surface is visible up front — the user sees what's coming before any of it is built. If this API already has operations, leave them alone unless the goal explicitly requires changing them.`,
       );
       lines.push(
-        `3. Register any node implementations each operation needs in the project config's registerNodes (one module — see the one-file rule in emberflow-basics). ${traceKindLine}`,
+        `3. BUILD EACH OUT, ONE AT A TIME. Finish each operation completely (logic nodes, mocks, scenarios, a passing run) before touching the next — the studio marks the one you're writing as in-progress, which is exactly the experience the user should have. Shared internal processes become their own internal operations called via Subflow nodes. If building teaches you the plan was wrong (an operation too many, a missing one), adjust: delete or add shells and say so in one line.`,
       );
       lines.push(
-        `4. VERIFY EACH: node ${EMBERFLOW_BIN} run <id> per operation (and per scenario), iterating until green. ${doctorLine('<each id>')}`,
+        `4. Register any node implementations each operation needs in the project config's registerNodes (one module — see the one-file rule in emberflow-basics). ${traceKindLine}`,
+      );
+      lines.push(
+        `5. VERIFY EACH: node ${EMBERFLOW_BIN} run <id> per operation (and per scenario), iterating until green. ${doctorLine('<each id>')}`,
       );
       lines.push('');
       lines.push(

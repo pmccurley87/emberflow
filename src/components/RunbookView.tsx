@@ -979,18 +979,9 @@ function RunbookFooter({
  * Row clicks drive selection; the Inspector (not a second detail panel here)
  * shows the clicked node's full state.
  */
-/** The canvas holding pattern shown while the agent scaffolds a just-created
- *  operation. The stub (name + route) is already selected; this stands in for
- *  the empty body until the agent writes the flow, which then loads live. */
-function BuildingHolding({
-  route,
-  title = 'Building this operation…',
-  body = 'The agent is writing the flow. It appears here live the moment it’s done — you can watch its progress in the Agent panel.',
-}: {
-  route?: string;
-  title?: string;
-  body?: string;
-}) {
+/** The canvas holding pattern shown while a build-api agent run designs the
+ *  surface and nothing under its location is selected yet. */
+function BuildingHolding({ title, body }: { title: string; body: string }) {
   return (
     <div className="mt-10 flex flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-highlight/30 bg-highlight/[0.03] px-6 py-14 text-center">
       <span className="ember-step-active flex size-11 items-center justify-center rounded-full bg-highlight/15 text-highlight">
@@ -1000,11 +991,6 @@ function BuildingHolding({
         <span className="text-[14px] font-medium text-foreground">{title}</span>
         <span className="max-w-sm text-[12.5px] leading-relaxed text-muted-foreground">{body}</span>
       </div>
-      {route && (
-        <span className="rounded-md border border-border/60 bg-secondary/40 px-2 py-1 font-mono text-[11.5px] text-muted-foreground">
-          {route}
-        </span>
-      )}
       <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-widest text-highlight/80">
         <span className="size-1.5 animate-pulse rounded-full bg-highlight" />
         waiting for the agent
@@ -1016,7 +1002,6 @@ function BuildingHolding({
 export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'technical' } = {}) {
   const liveFlow = useBuilderStore((s) => s.flow);
   const registry = useBuilderStore((s) => s.registry);
-  const buildingOperationId = useBuilderStore((s) => s.buildingOperationId);
   const buildingApiLocation = useBuilderStore((s) => s.buildingApiLocation);
   const liveRun = useBuilderStore((s) => s.run);
   const logs = useBuilderStore((s) => s.logs);
@@ -1164,7 +1149,6 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
     peeking,
   };
   const subtitle = flow.folder ?? `${flow.nodes.length} step${flow.nodes.length === 1 ? '' : 's'}`;
-  const building = buildingOperationId === flow.id;
   // A build-api run in flight and nothing under its location selected yet —
   // hold the canvas until the live poll auto-selects the agent's first op,
   // at which point flow.id sits under the location and this clears naturally.
@@ -1207,8 +1191,6 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
             title="Designing this API…"
             body="Operations appear in the sidebar as the agent creates them — watch progress in the Agent panel."
           />
-        ) : building ? (
-          <BuildingHolding route={flow.http ? `${flow.http.method} ${flow.http.path}` : undefined} />
         ) : (
           <>
             <RunbookItems items={doc.items} ctx={ctx} />

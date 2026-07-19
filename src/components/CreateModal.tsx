@@ -17,32 +17,6 @@ function slug(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
 }
 
-// Words that add no meaning to an operation's derived name/route.
-const STOP = new Set([
-  'a', 'an', 'the', 'and', 'to', 'for', 'of', 'that', 'with', 'from', 'on', 'in', 'into',
-  'your', 'my', 'me', 'it', 'create', 'make', 'build', 'add', 'new', 'return', 'get',
-]);
-// Read-ish verbs → a GET route; everything else defaults to POST.
-const GET_VERB = /^(list|get|look\s?up|fetch|find|show|read|search|retrieve|view)\b/i;
-
-/** Derive a first-guess operation name + method + path from the plain-language
- *  goal, so the create flow can stand up a real, selectable stub immediately.
- *  The agent (and the Inspector) can refine any of it afterwards. */
-function deriveOperation(goal: string, location: string): { name: string; method: string; httpPath: string } {
-  const words = goal
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((w) => w.length > 1 && !STOP.has(w))
-    .slice(0, 4);
-  const opSlug = words.join('-') || 'operation';
-  const name = words.length
-    ? words.map((w) => w[0].toUpperCase() + w.slice(1)).join(' ')
-    : 'New Operation';
-  const method = GET_VERB.test(goal.trim()) ? 'GET' : 'POST';
-  return { name, method, httpPath: `/${location}/${opSlug}` };
-}
-
 const OPERATION_EXAMPLES = [
   'List overdue invoices for a customer',
   'Charge a saved card and return the receipt',
@@ -103,7 +77,6 @@ export function CreateModal({
   onOpenChange: (open: boolean) => void;
   locations: string[];
 }) {
-  const createAndBuild = useBuilderStore((s) => s.createAndBuild);
   const buildApi = useBuilderStore((s) => s.buildApi);
   const agentRunning = useBuilderStore((s) => s.agentRun?.status === 'running');
 
@@ -138,19 +111,11 @@ export function CreateModal({
 
   const submit = () => {
     if (!canSubmit) return;
-    if (mode === 'api') {
-      // Describe-and-build: no stub — the agent designs the whole API surface
-      // (how many operations, their names and routes) from the goal. Operations
-      // appear in the sidebar live as it creates them.
-      buildApi({ location: targetLocation, goal: goal.trim() });
-      onOpenChange(false);
-      return;
-    }
-    const { name, method, httpPath } = deriveOperation(goal.trim(), targetLocation);
-    // Stand up the stub + select it, then let the agent fill it in. The user
-    // sees the operation's name and route immediately, with a holding pattern
-    // on the canvas until the build completes.
-    void createAndBuild({ location: targetLocation, name, method, httpPath, goal: goal.trim() });
+    // Describe-and-build, both modes: no stub, no guessed name/route — the
+    // agent owns the surface (op count, names, routes). It lays the plan down
+    // as placeholder shells first, so what's coming shows in the sidebar
+    // before any of it is built out.
+    buildApi({ location: targetLocation, goal: goal.trim() });
     onOpenChange(false);
   };
 
@@ -172,8 +137,8 @@ export function CreateModal({
               {mode === 'api'
                 ? 'Name the API and describe what it should do — the agent designs and builds the operations.'
                 : scopedLabel
-                  ? 'Describe what this operation should do — the agent builds it.'
-                  : 'Pick where it lives and describe what it should do.'}
+                  ? 'Describe what it should do — the agent shapes it into one or more operations and builds them.'
+                  : 'Pick where it lives and describe what it should do — the agent shapes it into one or more operations.'}
             </p>
           </div>
         </div>

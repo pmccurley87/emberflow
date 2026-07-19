@@ -5,8 +5,63 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { operationIdFromFile } from '../lib/operationFiles';
 import { useBuilderStore } from '../store/builderStore';
+import type { AgentHistoryRun } from '../store/agentClient';
 import type { ScenarioTestReport } from '../store/serverRunner';
 import { AgentStream } from './AgentStream';
+
+/** Fallback chat label for a persisted run whose intent carried no free text. */
+const ACTION_LABELS: Record<string, string> = {
+  'build-api': 'Build this API',
+  'new-scenario': 'Add a scenario',
+  'cover-operation': 'Cover this operation with scenarios',
+  ask: 'Question',
+};
+
+/**
+ * One persisted past conversation: the user message plus a quiet meta row
+ * (when, how it ended), with the full transcript behind a click — the history
+ * is context, and must not bury the live conversation under old streams.
+ */
+export function HistoryConversation({ run }: { run: AgentHistoryRun }) {
+  const [expanded, setExpanded] = useState(false);
+  const when = new Date(run.startedAt).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  return (
+    <div className="mb-2">
+      <div className="mb-1 flex justify-end">
+        <div className="max-w-[90%] rounded-lg rounded-br-sm bg-highlight/15 px-2.5 py-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-foreground">
+          {run.instruction || ACTION_LABELS[run.action] || run.action}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+        className="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ChevronRightIcon className={cn('size-3 shrink-0 transition-transform', expanded && 'rotate-90')} />
+        <span
+          className={cn(
+            'size-1.5 shrink-0 rounded-full',
+            run.status === 'done' ? 'bg-success' : 'bg-destructive',
+          )}
+        />
+        <span className="truncate">
+          {when} · {run.status === 'done' ? 'completed' : 'failed'}
+        </span>
+      </button>
+      {expanded && (
+        <div className="mt-1 border-l-[1.5px] border-border pl-2.5">
+          <AgentStream events={run.events} running={false} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Moved to src/lib/operationFiles.ts (the store needs it too, and a store
 // must not import from a component) — re-exported so existing imports keep
@@ -144,6 +199,7 @@ export function AgentConsole({ onDismiss }: { onDismiss: () => void }) {
   const envSetup = useBuilderStore((s) => s.agentEnvSetup);
   const steerQueue = useBuilderStore((s) => s.steerQueue);
   const queueSteer = useBuilderStore((s) => s.queueSteer);
+  const agentHistory = useBuilderStore((s) => s.agentHistory);
   const [instruction, setInstruction] = useState('');
   const running = agentRun?.status === 'running';
 
@@ -173,7 +229,7 @@ export function AgentConsole({ onDismiss }: { onDismiss: () => void }) {
     const reduceMotion =
       typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     el.scrollTo({ top: el.scrollHeight, behavior: reduceMotion ? 'auto' : 'smooth' });
-  }, [eventCount, agentRun?.status, agentRun?.verdicts]);
+  }, [eventCount, agentRun?.status, agentRun?.verdicts, agentHistory]);
 
   const send = () => {
     const text = instruction.trim();
@@ -245,6 +301,15 @@ export function AgentConsole({ onDismiss }: { onDismiss: () => void }) {
         }}
         className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3.5 py-3"
       >
+        {/* Past conversations for the OPEN operation (its runs + its API's
+            build runs), persisted server-side and re-shown whenever the
+            operation is reopened. Collapsed to the user message + one summary
+            line each; a click expands the full transcript. The live/latest
+            run below is excluded to avoid doubling it. */}
+        {!envSetup &&
+          agentHistory
+            .filter((h) => h.id !== agentRun?.id)
+            .map((h) => <HistoryConversation key={h.id} run={h} />)}
         {/* Your message — the instruction you sent, shown first like a chat. */}
         {agentRun?.instruction && (
           <div className="mb-1 flex justify-end">
@@ -253,7 +318,7 @@ export function AgentConsole({ onDismiss }: { onDismiss: () => void }) {
             </div>
           </div>
         )}
-        {!agentRun && (
+        {!agentRun && agentHistory.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center">
             <span className="flex size-9 items-center justify-center rounded-full bg-highlight/12 text-highlight">
               <SparklesIcon className="size-4" />

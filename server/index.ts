@@ -1096,6 +1096,19 @@ api.post('/agent', (req: Request, res: Response) => {
   res.status(201).json({ agentRunId });
 });
 
+// Persisted agent conversations for one operation (its own runs + the
+// build-api runs of its API), oldest first — the studio re-shows them when
+// the operation is reopened. `flow` is a query param because flow ids
+// contain slashes.
+api.get('/agent-history', (req: Request, res: Response) => {
+  const flow = req.query.flow;
+  if (typeof flow !== 'string' || flow.length === 0) {
+    res.status(400).json({ error: 'flow query parameter required' });
+    return;
+  }
+  res.json({ runs: agentRuns.history(flow) });
+});
+
 api.get('/agent/:id/events', (req, res) => {
   const runId = req.params.id;
   if (!agentRuns.has(runId)) {

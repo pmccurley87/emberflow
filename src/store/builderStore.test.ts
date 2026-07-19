@@ -35,6 +35,7 @@ vi.mock('./agentClient', async () => {
     startAgent: vi.fn(async () => 'run-1'),
     streamAgent: vi.fn(() => () => {}),
     fetchAgentDiff: vi.fn(async () => ({ diff: '', files: [] })),
+    fetchAgentHistory: vi.fn(async () => []),
   };
 });
 
@@ -1076,7 +1077,7 @@ describe('builderStore buildApi', () => {
       { action: 'build-api', location: 'billing', instruction: 'draft, send, and track invoices' },
       expect.anything(),
     );
-    // The whole point vs createAndBuild: the agent owns the surface, so no
+    // The whole point of build-api: the agent owns the surface, so no
     // stub is stood up before the run.
     expect(serverRunner.createOperationOnServer).not.toHaveBeenCalled();
   });
@@ -2151,5 +2152,26 @@ describe('builderStore.askAboutFailure', () => {
     useBuilderStore.getState().askAboutFailure('x');
 
     expect(agentClient.startAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe('agent conversation history', () => {
+  it('loadAgentHistory stores the fetched runs only while that flow is still open', async () => {
+    vi.mocked(agentClient.fetchAgentHistory)
+      .mockClear()
+      .mockResolvedValue([
+        { id: 'h1', action: 'edit-flow', instruction: 'add auth', status: 'done', startedAt: '2026-07-19T10:00:00Z', finishedAt: '2026-07-19T10:05:00Z', events: [] },
+      ]);
+    const openId = useBuilderStore.getState().flow.id;
+
+    await useBuilderStore.getState().loadAgentHistory(openId);
+    expect(useBuilderStore.getState().agentHistory).toHaveLength(1);
+    expect(useBuilderStore.getState().agentHistory[0].id).toBe('h1');
+
+    // A fetch that lands after the user moved to another flow must not
+    // overwrite the open flow's history.
+    vi.mocked(agentClient.fetchAgentHistory).mockResolvedValue([]);
+    await useBuilderStore.getState().loadAgentHistory('some/other-flow');
+    expect(useBuilderStore.getState().agentHistory).toHaveLength(1);
   });
 });

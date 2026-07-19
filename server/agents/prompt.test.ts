@@ -96,7 +96,7 @@ describe('buildPrompt', () => {
     expect(prompt).toMatch(/ create <id>/i);
   });
 
-  it('build-api: owns the whole API surface — design judgment, one-at-a-time creation, the create CLI lines, and a finish summary', () => {
+  it('build-api: owns the whole API surface — design judgment, placeholders-first then one-at-a-time build-out, the create CLI lines, and a finish summary', () => {
     const intent: AgentIntent = {
       action: 'build-api',
       location: 'billing',
@@ -110,8 +110,11 @@ describe('buildPrompt', () => {
     // The agent designs the surface: how many operations, named what, HTTP vs internal.
     expect(prompt).toContain('API SURFACE');
     expect(prompt).toContain('YOUR design judgment');
-    // Operations are created + finished one at a time so the studio shows them landing live.
+    // The planned surface lands as placeholder shells first, then each is
+    // built out one at a time so the studio shows them taking shape live.
+    expect(prompt).toContain('LAY DOWN THE SURFACE AS PLACEHOLDERS');
     expect(prompt).toContain('ONE AT A TIME');
+    expect(prompt).toContain('leave them alone');
     // Both create-CLI shapes: HTTP endpoint and internal sub-flow.
     expect(prompt).toMatch(/create billing\/<slug> --method <METHOD> --path <\/route>/);
     expect(prompt).toMatch(/create billing\/<slug> --name "<Display Name>"/);

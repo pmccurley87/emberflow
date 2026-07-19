@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { changedFiles, diffSince, isGitRepo, revert as gitRevert, snapshot, type GitSnapshot } from './gitScope';
 import { buildPrompt, type AgentIntent, type AvailableNode, type GuidedSetupState } from './prompt';
 import type { InfrastructureManifest } from '../infrastructure';
@@ -68,6 +70,51 @@ interface Run {
   buffer: AgentEvent[];
   listeners: Set<Listener>;
   status: 'running' | 'done' | 'error';
+  /** History scope this run's transcript persists under on finish (null = not persisted). */
+  scope: string | null;
+  action: string;
+  instruction: string;
+  startedAt: string;
+  persisted: boolean;
+}
+
+/** One persisted agent conversation — the full event transcript plus enough
+ *  metadata to render it as a past chat in the studio's Agent panel. */
+export interface AgentHistoryRecord {
+  id: string;
+  action: string;
+  instruction: string;
+  status: 'done' | 'error';
+  startedAt: string;
+  finishedAt: string;
+  events: AgentEvent[];
+}
+
+/** Max persisted conversations kept per scope file — oldest evicted beyond this. */
+const MAX_HISTORY_PER_SCOPE = 20;
+
+/**
+ * The history scope a run's transcript files under. Operation-targeted runs
+ * key on the flow id; surface-building runs key on the API (first location
+ * segment) so an operation's history view can also show the build that
+ * created it. Project-wide runs (environments, scouting, guided setup) and
+ * flow-less asks return null — they belong to no operation.
+ */
+function historyScopeFor(intent: AgentIntent): string | null {
+  switch (intent.action) {
+    case 'edit-flow':
+    case 'edit-node':
+    case 'new-scenario':
+    case 'cover-operation':
+      return `op:${intent.flowId}`;
+    case 'ask':
+      return intent.flowId ? `op:${intent.flowId}` : null;
+    case 'new-operation':
+    case 'build-api':
+      return `api:${resolveLocationDir(intent.location).split('/')[0]}`;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -201,7 +248,19 @@ export class AgentRunManager {
           });
 
     const id = randomUUID();
-    const run: Run = { id, snapshot: snap, adapter, buffer: [], listeners: new Set(), status: 'running' };
+    const run: Run = {
+      id,
+      snapshot: snap,
+      adapter,
+      buffer: [],
+      listeners: new Set(),
+      status: 'running',
+      scope: historyScopeFor(intent),
+      action: intent.action,
+      instruction: 'instruction' in intent ? intent.instruction : '',
+      startedAt: new Date().toISOString(),
+      persisted: false,
+    };
     this.runs.set(id, run);
     this.activeRunId = id;
 
@@ -231,14 +290,78 @@ export class AgentRunManager {
           this.clearActive(run.id);
         }
         emit(event);
+        // Persist AFTER the terminal event is in the buffer, so the stored
+        // transcript replays identically to the live stream.
+        if (event.type === 'done' || event.type === 'error') this.persistHistory(run);
       }
     } catch (err) {
       run.status = 'error';
       this.clearActive(run.id);
       emit({ type: 'error', text: err instanceof Error ? err.message : String(err) });
+      this.persistHistory(run);
     } finally {
       this.clearActive(run.id);
     }
+  }
+
+  /** `emberflow/agent-history` beside `apis`, self-gitignored (`.gitignore` with
+   *  `*`) so transcripts never show up in the run's own git-scoped diff. */
+  private historyDir(): string {
+    const dir = join(this.apisDir, '..', 'agent-history');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const keep = join(dir, '.gitignore');
+    if (!existsSync(keep)) writeFileSync(keep, '*\n');
+    return dir;
+  }
+
+  private historyFile(scope: string): string {
+    return join(this.historyDir(), `${scope.replace(/[^a-zA-Z0-9_-]/g, '__')}.json`);
+  }
+
+  private readHistoryFile(scope: string): AgentHistoryRecord[] {
+    const file = this.historyFile(scope);
+    if (!existsSync(file)) return [];
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as AgentHistoryRecord[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return []; // corrupt file: start the scope fresh rather than fail runs
+    }
+  }
+
+  /** Appends the finished run's transcript to its scope file. Best-effort —
+   *  a disk failure must never take the run (or its live stream) down. */
+  private persistHistory(run: Run): void {
+    if (run.persisted || !run.scope || run.status === 'running') return;
+    run.persisted = true;
+    try {
+      const records = this.readHistoryFile(run.scope).filter((r) => r.id !== run.id);
+      records.push({
+        id: run.id,
+        action: run.action,
+        instruction: run.instruction,
+        status: run.status,
+        startedAt: run.startedAt,
+        finishedAt: new Date().toISOString(),
+        events: run.buffer,
+      });
+      writeFileSync(this.historyFile(run.scope), JSON.stringify(records.slice(-MAX_HISTORY_PER_SCOPE)));
+    } catch (err) {
+      console.error('[emberflow] failed to persist agent history:', err);
+    }
+  }
+
+  /**
+   * Every persisted conversation relevant to one operation, oldest first: runs
+   * scoped to the flow itself plus the surface-building runs of its API.
+   */
+  history(flowId: string): AgentHistoryRecord[] {
+    if (!isSafeFlowId(flowId, this.apisDir)) return [];
+    const records = [
+      ...this.readHistoryFile(`op:${flowId}`),
+      ...this.readHistoryFile(`api:${flowId.split('/')[0]}`),
+    ];
+    return records.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   }
 
   private clearActive(id: string): void {
