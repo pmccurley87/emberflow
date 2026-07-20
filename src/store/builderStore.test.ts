@@ -1084,11 +1084,20 @@ describe('builderStore buildApi', () => {
 });
 
 describe('builderStore build ledger', () => {
-  const opFlow = (id: string, name: string): WorkflowDefinition => ({
+  /** A built-out op: >2 nodes, so an unchanged tick settles it 'done'. A
+   *  just-created Input→terminus shell (≤2 nodes) settles 'queued' instead —
+   *  see the dedicated shell test. */
+  const opFlow = (id: string, name: string, nodeCount = 3): WorkflowDefinition => ({
     id,
     name,
     version: 1,
-    nodes: [],
+    nodes: Array.from({ length: nodeCount }, (_, i) => ({
+      id: `n${i}`,
+      type: 'Input',
+      label: `N${i}`,
+      position: { x: i, y: 0 },
+      config: {},
+    })),
     edges: [],
     createdAt: '2026-07-02T00:00:00Z',
     updatedAt: '2026-07-02T00:00:00Z',
@@ -1171,6 +1180,58 @@ describe('builderStore build ledger', () => {
     // A new run clears the ledger at the start, before any poll tick lands.
     await useBuilderStore.getState().runAgent({ action: 'edit-flow', flowId: 'other/root', instruction: 'go' });
     expect(useBuilderStore.getState().buildLedger).toBeNull();
+  });
+
+  it('a bare shell settles to queued (not done) and never gains a built check on finish', async () => {
+    let onEvent: ((event: agentClient.AgentEvent) => void) | undefined;
+    vi.mocked(agentClient.streamAgent)
+      .mockReset()
+      .mockImplementation((_runId, handler) => {
+        onEvent = handler;
+        return () => {};
+      });
+
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(payload([opFlow('other/root', 'Other')]));
+    useBuilderStore.setState({ buildingApiLocation: 'goinsights' });
+    await useBuilderStore
+      .getState()
+      .runAgent({ action: 'build-api', location: 'goinsights', instruction: 'build it' });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // The agent creates two shells up front (Input→terminus, 2 nodes) and
+    // starts building the first.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('other/root', 'Other'), opFlow('goinsights/a', 'A', 2), opFlow('goinsights/b', 'B', 2)]),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useBuilderStore.getState().buildLedger).toEqual({
+      'goinsights/a': 'building',
+      'goinsights/b': 'building',
+    });
+
+    // Next tick: A grew real nodes (built out) and settles 'done' the tick
+    // after; B is still the untouched shell → 'queued', never 'done'.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('other/root', 'Other'), opFlow('goinsights/a', 'A', 5), opFlow('goinsights/b', 'B', 2)]),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValueOnce(
+      payload([opFlow('other/root', 'Other'), opFlow('goinsights/a', 'A', 5), opFlow('goinsights/b', 'B', 2)]),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useBuilderStore.getState().buildLedger).toEqual({
+      'goinsights/a': 'done',
+      'goinsights/b': 'queued',
+    });
+
+    // Successful finish: the built op keeps its check; the still-bare shell's
+    // entry drops rather than flipping to a lying 'done'.
+    vi.mocked(serverRunner.fetchWorkflows).mockResolvedValue(null);
+    onEvent?.({ type: 'done' });
+    await vi.waitFor(() => {
+      expect(useBuilderStore.getState().agentRun?.status).toBe('done');
+    });
+    expect(useBuilderStore.getState().buildLedger).toEqual({ 'goinsights/a': 'done' });
   });
 
   it('a pre-existing op under the location is not misclassified as building, but IS tracked once the agent edits it', async () => {

@@ -598,6 +598,26 @@ async function dispatch(command: string | undefined, args: string[]): Promise<nu
       return result.ok ? 0 : 1;
     }
 
+    case 'plan': {
+      // Declares the surface a build run intends to create, BEFORE creating
+      // anything — the studio shows each op as a planned row that becomes real
+      // as the corresponding `create` lands.
+      const location = args.filter((a) => !a.startsWith('--'))[0];
+      const opsJson = flagValue(args, '--ops');
+      if (!location || !opsJson) {
+        fail('Usage: plan <location> --ops \'[{"id":"<slug>","name":"<display>","method":"POST","path":"/route"}, …]\'', 2);
+      }
+      let ops: unknown;
+      try {
+        ops = JSON.parse(opsJson);
+      } catch {
+        fail('--ops must be a JSON array', 2);
+      }
+      const result = await client.declarePlan(location, ops as unknown[]);
+      printJson(result);
+      return result.ok ? 0 : 1;
+    }
+
     case 'create': {
       const id = args.filter((a) => !a.startsWith('--'))[0];
       if (!id) {

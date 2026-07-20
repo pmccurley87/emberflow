@@ -181,6 +181,14 @@ approving it. The canvas itself must read as:
   queue, and cron handlers and durable hand-offs remain separate operations;
   collapsing one into a synchronous `Subflow` is Critical when it changes
   lifecycle, retry, or delivery semantics.
+- **A hand-off is not an excuse to hide the pipeline.** When an operation
+  enqueues a durable job whose downstream phases are only described — in a
+  node's output payload, a description field, or a doc string — instead of
+  modeled as a visible node graph in their own internal operation, that is
+  Important. Report `pipeline-hidden-in-data` and name the phases the reader
+  cannot see on any canvas. Honesty about the async boundary and visibility
+  of what runs behind it are both required; satisfying one by sacrificing
+  the other fails review.
 
 A typed proxy to a genuinely opaque external service is not required to expose
 that service's unavailable internals. It must be described as a proxy or opaque

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import {
   CheckCircle2Icon,
   ChevronDownIcon,
+  CircleDashedIcon,
   ChevronRightIcon,
   CopyIcon,
   FolderIcon,
@@ -18,9 +19,48 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Badge } from '@/components/ui/badge';
 import { useBuilderStore } from '../store/builderStore';
+import type { AgentPlanOp } from '../store/agentClient';
 import { buildApiTree } from '../store/apiTree';
 import type { ApiTreeNode, OpItem } from '../store/apiTree';
 import { cn } from '@/lib/utils';
+
+/**
+ * A ghost row for an operation the live build run has DECLARED but not yet
+ * created (`emberflow plan`). Reads as an outline of the coming op — dashed
+ * frame, dimmed content, an ember "planned" tag — and disappears the moment
+ * the real operation file lands (the row then renders as a normal
+ * OperationRow with the build ledger's spinner). Not clickable: there is
+ * nothing to open yet.
+ */
+export function PlannedRow({ op, depth }: { op: AgentPlanOp; depth: number }) {
+  return (
+    <div
+      style={{ paddingLeft: 8 + depth * 14 }}
+      title="Planned — the agent will build this operation next"
+      className="my-0.5 flex w-full items-center gap-2 rounded-md border border-dashed border-border/70 py-1 pr-2.5 text-left text-[12.5px] text-muted-foreground/70 select-none"
+    >
+      {op.method ? (
+        <Badge variant="outline" className="shrink-0 opacity-60">
+          {op.method}
+        </Badge>
+      ) : (
+        <CircleDashedIcon className="size-3.5 shrink-0 text-muted-foreground/40" />
+      )}
+      <span className="truncate">{op.name}</span>
+      {op.path && (
+        <span className="ml-auto truncate font-mono text-[10px] text-muted-foreground/40">{op.path}</span>
+      )}
+      <span
+        className={cn(
+          'shrink-0 text-[9px] font-medium uppercase tracking-wide text-highlight/70',
+          !op.path && 'ml-auto',
+        )}
+      >
+        planned
+      </span>
+    </div>
+  );
+}
 
 function methodBadgeVariant(method?: string): 'success' | 'highlight' | 'default' | 'destructive' | 'outline' {
   switch (method) {
@@ -88,7 +128,15 @@ function RowMenu({ label, onDelete }: { label: string; onDelete: () => void }) {
  * reads its ledger entry from the live store, which renderToStaticMarkup
  * can't see (zustand's SSR snapshot is frozen at store creation).
  */
-export function LedgerGlyph({ state }: { state: 'building' | 'done' | undefined }) {
+export function LedgerGlyph({ state }: { state: 'queued' | 'building' | 'done' | undefined }) {
+  if (state === 'queued') {
+    return (
+      <CircleDashedIcon
+        className="size-3 shrink-0 text-muted-foreground/60"
+        aria-label="queued — the agent will build this next"
+      />
+    );
+  }
   if (state === 'building') {
     return (
       <LoaderCircleIcon
@@ -266,6 +314,7 @@ function TreeNode({
   collapsed,
   toggle,
   onAddOperation,
+  planned,
 }: {
   node: ApiTreeNode;
   keyPath: string;
@@ -275,6 +324,8 @@ function TreeNode({
   toggle: (key: string) => void;
   /** Open the agentic create modal scoped to this API (from the hover +). */
   onAddOperation: (location: string) => void;
+  /** Declared-but-not-yet-created ops of the live build run, ghost-rendered under this API. */
+  planned?: AgentPlanOp[];
 }) {
   const isCollapsed = collapsed.has(keyPath);
   const deleteOperations = useBuilderStore((s) => s.deleteOperations);
@@ -349,8 +400,35 @@ function TreeNode({
           {node.operations.map((op) => (
             <OperationRow key={op.id} op={op} depth={depth + 1} />
           ))}
+          {planned?.map((op) => (
+            <PlannedRow key={op.id} op={op} depth={depth + 1} />
+          ))}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Ghost group for a planned API that has NO operations on disk yet — the
+ * build run declared it, nothing under it exists. Same silhouette as a real
+ * API row, dimmed, so the surface reads correctly from the first second.
+ */
+export function PlannedApiGroup({ name, ops }: { name: string; ops: AgentPlanOp[] }) {
+  return (
+    <div>
+      <div
+        style={{ paddingLeft: 8 }}
+        className="flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-[12.5px] font-semibold text-muted-foreground/70 select-none"
+      >
+        <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground/50" />
+        <WorkflowIcon className="size-3.5 shrink-0 text-muted-foreground/50" />
+        <span className="truncate">{name}</span>
+        <span className="ml-auto text-[9px] font-medium uppercase tracking-wide text-highlight/70">planned</span>
+      </div>
+      {ops.map((op) => (
+        <PlannedRow key={op.id} op={op} depth={1} />
+      ))}
     </div>
   );
 }
@@ -361,7 +439,25 @@ export function Sidebar() {
   // The create modal itself is hosted once in App (CreateModalHost) — the
   // sidebar only asks the store to open it, so it works with the sidebar closed.
   const setCreateModal = useBuilderStore((s) => s.setCreateModal);
+  const agentPlan = useBuilderStore((s) => s.agentPlan);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  // Planned-but-not-yet-created ops of the live build run, grouped by API
+  // (first id segment). Ops whose file already landed drop out here and render
+  // as real rows with the build ledger's spinner instead.
+  const plannedByApi = useMemo(() => {
+    const grouped = new Map<string, AgentPlanOp[]>();
+    if (!agentPlan) return grouped;
+    const existing = new Set(workflows.map((w) => w.id));
+    for (const op of agentPlan.ops) {
+      if (existing.has(op.id)) continue;
+      const api = op.id.split('/')[0];
+      const list = grouped.get(api) ?? [];
+      list.push(op);
+      grouped.set(api, list);
+    }
+    return grouped;
+  }, [agentPlan, workflows]);
 
   const tree = useMemo(
     () =>
@@ -425,8 +521,14 @@ export function Sidebar() {
             collapsed={collapsed}
             toggle={toggle}
             onAddOperation={(location) => setCreateModal({ mode: 'operation', location })}
+            planned={plannedByApi.get(api.name)}
           />
         ))}
+        {[...plannedByApi.entries()]
+          .filter(([api]) => !tree.some((t) => t.name === api))
+          .map(([api, ops]) => (
+            <PlannedApiGroup key={api} name={api} ops={ops} />
+          ))}
       </nav>
       <div className="border-t border-sidebar-border p-2">
         <Button

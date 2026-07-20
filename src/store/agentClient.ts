@@ -126,6 +126,26 @@ export interface AgentDiffResult {
 }
 
 /** GET /agent/:id/diff */
+/** One operation of a running build's declared plan (mirrors server AgentPlanOp). */
+export interface AgentPlanOp {
+  id: string;
+  name: string;
+  method?: string;
+  path?: string;
+}
+
+/** GET /agent-plan — the surface the LIVE build run declared (null when no run/plan). */
+export async function fetchAgentPlan(): Promise<{ location: string; ops: AgentPlanOp[] } | null> {
+  try {
+    const response = await fetch(`${BASE}/agent-plan`);
+    if (!response.ok) return null;
+    const { plan } = (await response.json()) as { plan: { location: string; ops: AgentPlanOp[] } | null };
+    return plan ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** One persisted agent conversation (mirrors server AgentHistoryRecord). */
 export interface AgentHistoryRun {
   id: string;

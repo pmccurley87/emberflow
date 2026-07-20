@@ -419,6 +419,11 @@ export class AgentRunManager {
     run?.adapter.cancel();
   }
 
+  /** Whether any agent run is currently live (the declared build plan's lifetime). */
+  hasActiveRun(): boolean {
+    return this.activeRunId !== null;
+  }
+
   /**
    * Evicts oldest terminal (done|error) runs beyond MAX_TERMINAL_RUNS so the
    * `runs` map — and each run's full event buffer — doesn't grow unbounded

@@ -1096,6 +1096,60 @@ api.post('/agent', (req: Request, res: Response) => {
   res.status(201).json({ agentRunId });
 });
 
+/**
+ * The build plan a running agent declared via `emberflow plan` — the studio
+ * renders it as ghost rows in the sidebar so the user sees the intended API
+ * surface before any operation exists. Held in memory only: its lifetime IS
+ * the agent run's, so reads self-clean once no run is live.
+ */
+interface AgentPlanOp {
+  id: string;
+  name: string;
+  method?: string;
+  path?: string;
+}
+let agentPlan: { location: string; ops: AgentPlanOp[] } | null = null;
+
+// Declared by the agent CLI at the start of a build — replaces any prior plan.
+api.post('/agent-plan', (req: Request, res: Response) => {
+  const { location, ops } = (req.body ?? {}) as { location?: unknown; ops?: unknown };
+  if (typeof location !== 'string' || location.length === 0) {
+    res.status(400).json({ error: 'location must be a non-empty string' });
+    return;
+  }
+  if (!Array.isArray(ops) || ops.length === 0) {
+    res.status(400).json({ error: 'ops must be a non-empty array' });
+    return;
+  }
+  const cleaned: AgentPlanOp[] = [];
+  for (const raw of ops) {
+    const op = raw as Record<string, unknown>;
+    if (typeof op.id !== 'string' || op.id.length === 0 || typeof op.name !== 'string' || op.name.length === 0) {
+      res.status(400).json({ error: 'each op needs a string id and name' });
+      return;
+    }
+    // Ids file under the plan's location unless already anchored there — a
+    // bare slug AND a folder path ("daily-signals/dispatch") both get the
+    // location prefix, matching the ids `create <location>/…` will produce.
+    const id = op.id === location || op.id.startsWith(`${location}/`) ? op.id : `${location}/${op.id}`;
+    cleaned.push({
+      id,
+      name: op.name,
+      ...(typeof op.method === 'string' ? { method: op.method.toUpperCase() } : {}),
+      ...(typeof op.path === 'string' ? { path: op.path } : {}),
+    });
+  }
+  agentPlan = { location, ops: cleaned };
+  res.status(201).json({ ok: true, ops: cleaned.length });
+});
+
+api.get('/agent-plan', (_req: Request, res: Response) => {
+  // The plan's lifetime is the run's: once no agent is live, it is stale —
+  // drop it so a reload never shows ghost rows for a finished (or dead) build.
+  if (agentPlan && !agentRuns.hasActiveRun()) agentPlan = null;
+  res.json({ plan: agentPlan });
+});
+
 // Persisted agent conversations for one operation (its own runs + the
 // build-api runs of its API), oldest first — the studio re-shows them when
 // the operation is reopened. `flow` is a query param because flow ids

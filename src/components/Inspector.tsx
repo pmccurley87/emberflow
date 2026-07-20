@@ -1030,13 +1030,25 @@ export function Inspector() {
             {definition.effects === 'mutation' && (
               <span className="text-[11px] text-warn" title="Mutation: has side effects">⚡</span>
             )}
+            {state?.mocked && (
+              <span
+                className="cursor-help rounded border border-warn/40 px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wide text-warn"
+                title="This run answered from the scenario's canned mock — the real call described here was NOT made. Run in real serving mode to record a live trace."
+              >
+                mocked
+              </span>
+            )}
           </div>
           {definition.traceDetail ? (
             <p className="font-mono text-[11.5px] leading-relaxed break-words text-foreground/85">
               {definition.traceDetail}
             </p>
           ) : (
-            <p className="text-[11.5px] text-muted-foreground/60">No trace detail recorded.</p>
+            <p className="text-[11.5px] text-muted-foreground/60">
+              No call detail declared — set <code className="font-mono">traceDetail</code> on this
+              node&apos;s definition (e.g. the endpoint, query, or model it calls) so readers see the
+              real call here even in mock mode.
+            </p>
           )}
         </section>
       )}

@@ -167,6 +167,24 @@ export async function deleteOperation(id: string): Promise<CreateOperationResult
   return { ok: false, error: body?.error ?? `Delete failed with status ${res.status}` };
 }
 
+/** POST /agent-plan — declare the API surface a build run intends to create
+ *  (the studio shows it as planned rows until each operation lands). */
+export async function declarePlan(location: string, ops: unknown[]): Promise<CreateOperationResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl()}/agent-plan`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ location, ops }),
+    });
+  } catch (err) {
+    throw new RunnerUnreachableError(err);
+  }
+  if (res.ok) return { ok: true };
+  const body = (await res.json().catch(() => undefined)) as { error?: string } | undefined;
+  return { ok: false, error: body?.error ?? `Plan failed with status ${res.status}` };
+}
+
 export async function createOperation(
   flow: WorkflowDefinition,
   path: string,

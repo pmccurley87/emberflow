@@ -30,8 +30,8 @@ import {
 import type {
   EnvAuth, ErrorHandlerTag, EnvironmentSummary, ScenarioTestReport, ServerRunOptions, StepResult,
 } from './serverRunner';
-import { cancelAgent, fetchAgentDiff, fetchAgentHistory, revertAgent, startAgent, streamAgent } from './agentClient';
-import type { AgentEvent, AgentHistoryRun, AgentIntent, AgentKind, StartAgentOptions } from './agentClient';
+import { cancelAgent, fetchAgentDiff, fetchAgentHistory, fetchAgentPlan, revertAgent, startAgent, streamAgent } from './agentClient';
+import type { AgentEvent, AgentHistoryRun, AgentIntent, AgentKind, AgentPlanOp, StartAgentOptions } from './agentClient';
 import { fetchSetupStatus } from './setupClient';
 import type { SetupStatus } from './setupClient';
 import { extractGuidedQuestions } from '../lib/guidedQuestions';
@@ -402,7 +402,11 @@ interface BuilderState {
    * (not on finish — the completed ledger stays visible, all flipped to
    * `'done'`, until the next run begins).
    */
-  buildLedger: Record<string, 'building' | 'done'> | null;
+  buildLedger: Record<string, 'queued' | 'building' | 'done'> | null;
+  /** The surface the LIVE build run declared via `emberflow plan` — rendered
+   *  as planned (ghost) rows in the sidebar until each op's file lands.
+   *  Polled with the live run; cleared when the run finishes. */
+  agentPlan: { location: string; ops: AgentPlanOp[] } | null;
   /** Text typed while an agent run is live: held, shown as queued in the panel,
    *  and auto-dispatched as the follow-up run the moment this one finishes.
    *  (Agent CLIs are detached with stdin ignored — mid-process injection isn't
@@ -915,6 +919,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
     guidedTranscript: [],
     buildingApiLocation: null,
     buildLedger: null,
+    agentPlan: null,
     steerQueue: null,
     queueSteer(text) {
       const trimmed = text.trim();
@@ -1184,7 +1189,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       // synchronously, before its follow-up runAgent call, so by the time
       // that follow-up call reaches this line the queue it handed off is
       // already null; this clear only ever wipes an already-stale leftover.
-      set({ buildLedger: null, steerQueue: null });
+      set({ buildLedger: null, steerQueue: null, agentPlan: null });
       const launchedIntent = intent;
       const effectiveOpts = opts ?? get().agentChoice;
       // A guided-setup run is OWNED by the WelcomeDialog's embedded stream, so
@@ -1263,6 +1268,13 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
       let ledgerSeeded = false;
       const pollOnce = async (): Promise<void> => {
         try {
+          // Planned surface: the agent declares it once near run start; keep
+          // the sidebar's ghost rows in sync with it every tick (a re-plan
+          // mid-run replaces it; ops that now exist stop ghosting via the
+          // Sidebar's own existence filter).
+          void fetchAgentPlan().then((plan) => {
+            set((s) => (s.agentRun && s.agentRun.id === agentRunId ? { agentPlan: plan } : {}));
+          });
           const payload = await fetchWorkflows();
           if (!payload || payload.flows.length === 0) return;
           const { flows, operations } = payload;
@@ -1287,9 +1299,12 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
           // being built gets classified — new-since-last-tick or
           // changed-since-last-tick is 'building' (the agent is actively
           // writing it right now); previously 'building' and unchanged this
-          // tick is 'done'. An op that was never 'building' and hasn't
-          // changed (a pre-existing op the agent left alone) gets no entry
-          // at all, so it never shows as part of this build.
+          // tick settles to 'queued' while it is still a bare shell (the
+          // agent created it and moved on — a shell must never read as
+          // built) and 'done' once it has real nodes. An op that was never
+          // 'building' and hasn't changed (a pre-existing op the agent left
+          // alone) gets no entry at all, so it never shows as part of this
+          // build.
           if (apiLoc) {
             const underLoc = flows.filter((f) => f.id.startsWith(`${apiLoc}/`));
             if (!ledgerSeeded) {
@@ -1298,14 +1313,16 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
               set({ buildLedger: {} });
             } else {
               const prevLedger = get().buildLedger ?? {};
-              const ledger: Record<string, 'building' | 'done'> = { ...prevLedger };
+              const ledger: Record<string, 'queued' | 'building' | 'done'> = { ...prevLedger };
               for (const f of underLoc) {
                 const serialized = JSON.stringify(f);
                 const prevSer = prevSerialized.get(f.id);
                 if (prevSer === undefined || prevSer !== serialized) {
                   ledger[f.id] = 'building';
                 } else if (prevLedger[f.id] === 'building') {
-                  ledger[f.id] = 'done';
+                  // A just-created Input→terminus shell has 2 nodes; anything
+                  // beyond that means the agent actually built it out.
+                  ledger[f.id] = f.nodes.length <= 2 ? 'queued' : 'done';
                 }
                 prevSerialized.set(f.id, serialized);
               }
@@ -1333,18 +1350,21 @@ export const useBuilderStore = create<BuilderState>((set, get) => {
         stopPoll();
         set((s) => (s.agentRun && s.agentRun.id === agentRunId ? { agentRun: { ...s.agentRun, status } } : {}));
         // The build (if any) is over — drop the canvas holding patterns. On
-        // a successful finish the ledger is left in place with every entry
-        // flipped to 'done' so the sidebar still reads as a completed build
-        // ledger until the next run starts and clears it. On an error finish
-        // an op still marked 'building' was left mid-edit by the agent — it
-        // never got a 'done' tick — so it's dropped rather than shown as
-        // built; already-'done' ops (completed before the failure) stay.
+        // a successful finish, 'building' entries flip to 'done' (the run
+        // ended cleanly, so the op the agent was mid-writing is finished) and
+        // the completed ledger stays visible until the next run clears it —
+        // but 'queued' entries drop: a still-bare shell must never gain a
+        // built check just because the run ended. On an error finish both
+        // 'building' and 'queued' drop; already-'done' ops stay.
         set((s) => ({
           buildingApiLocation: null,
+          agentPlan: null,
           buildLedger: s.buildLedger
-            ? status === 'done'
-              ? Object.fromEntries(Object.keys(s.buildLedger).map((id) => [id, 'done' as const]))
-              : Object.fromEntries(Object.entries(s.buildLedger).filter(([, v]) => v === 'done'))
+            ? Object.fromEntries(
+                Object.entries(s.buildLedger)
+                  .filter(([, v]) => (status === 'done' ? v !== 'queued' : v === 'done'))
+                  .map(([id, v]) => [id, status === 'done' && v === 'building' ? ('done' as const) : v]),
+              )
             : s.buildLedger,
         }));
         if (status === 'done') {

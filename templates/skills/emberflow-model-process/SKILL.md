@@ -163,6 +163,17 @@ underneath it:
   useful → a `Subflow` node calling a separate internal operation. Subflow
   extraction must make the domain read-through clearer. Do not mirror a
   helper call merely because the source factors it out.
+- **Asynchronous hand-offs (queue jobs, cron pipelines, workers) → model the
+  downstream pipeline as its own internal operation with a visible node graph.**
+  Never collapse the phases a durable job runs into one node's output data or a
+  description field to avoid implying synchronous execution — the reader gets
+  their understanding from the canvas, not from opening code or JSON payloads.
+  The triggering operation models the hand-off honestly (enqueue, dry-run by
+  default) and names the downstream operation; the downstream operation (no
+  HTTP trigger — studio-run only) shows each phase, gate, and tolerated-failure
+  branch as nodes, annotated as running asynchronously in the worker. Both
+  honesty rules hold at once: the boundary is a real hand-off AND the pipeline
+  behind it is fully visible.
 - Effects → `effects: 'mutation'` nodes that dry-run by default and only commit
   under an explicit opt-in. The commit path performs the REAL side effect the
   source performs — the same insert, the same webhook, the same send. A

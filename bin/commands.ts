@@ -206,6 +206,7 @@ export async function runCommand(p: ParsedArgs, ctx: RuntimeContext = defaultCtx
     case 'save':
     case 'samples':
     case 'create':
+    case 'plan':
     case 'delete':
     case 'rename': {
       // Rich CLI operation commands, also in-process (no `tsx` child spawn).
@@ -336,7 +337,7 @@ export async function runCommand(p: ParsedArgs, ctx: RuntimeContext = defaultCtx
     }
     default:
       console.log(
-        'Usage: emberflow <dev|serve|mcp|init|run|test|doctor|list-nodes|node-schema|list-workflows|get-workflow|list-environments|login-environment|set-environment-auth|serving|validate|publish|save|create|delete|rename|samples> [--port N] [--project DIR] [--scenario NAME] [--no-skills] [--global|--local] [--no-launch] [--no-git] [--mock] [--js|--ts] [--yes]\n' +
+        'Usage: emberflow <dev|serve|mcp|init|run|test|doctor|list-nodes|node-schema|list-workflows|get-workflow|list-environments|login-environment|set-environment-auth|serving|validate|publish|save|create|plan|delete|rename|samples> [--port N] [--project DIR] [--scenario NAME] [--no-skills] [--global|--local] [--no-launch] [--no-git] [--mock] [--js|--ts] [--yes]\n' +
           '  test [opId] [--environment NAME] [--json]   Run scenario expectations in-process (no runner) — exit 0/1/2\n' +
           '  doctor [opId] [--fix]                       Diagnose operation(s) in-process (no runner); --fix seeds param defaults — exit 0/1/2'
       );

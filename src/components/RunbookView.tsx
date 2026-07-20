@@ -1003,6 +1003,7 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
   const liveFlow = useBuilderStore((s) => s.flow);
   const registry = useBuilderStore((s) => s.registry);
   const buildingApiLocation = useBuilderStore((s) => s.buildingApiLocation);
+  const ledgerState = useBuilderStore((s) => s.buildLedger?.[s.flow.id]);
   const liveRun = useBuilderStore((s) => s.run);
   const logs = useBuilderStore((s) => s.logs);
   const runHistory = useBuilderStore((s) => s.runHistory);
@@ -1154,6 +1155,11 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
   // at which point flow.id sits under the location and this clears naturally.
   const buildingApi =
     buildingApiLocation !== null && !flow.id.startsWith(`${buildingApiLocation}/`);
+  // The OPEN op is part of the live build and still a bare Input→terminus
+  // shell — its two generic rows would read as the finished document. Hold
+  // the canvas instead until real nodes land ('queued': not started yet;
+  // 'building': being written right now).
+  const shellState = flow.nodes.length <= 2 ? ledgerState : undefined;
 
   // Step-drill breadcrumb: ancestors from the stashed levels (root first),
   // then the deepest (live) flow. Ancestor clicks peek; the last crumb
@@ -1190,6 +1196,16 @@ export function RunbookView({ register = 'simple' }: { register?: 'simple' | 'te
           <BuildingHolding
             title="Designing this API…"
             body="Operations appear in the sidebar as the agent creates them — watch progress in the Agent panel."
+          />
+        ) : shellState === 'building' ? (
+          <BuildingHolding
+            title="Building this operation…"
+            body="The agent is writing this flow right now — steps appear here live as they land."
+          />
+        ) : shellState === 'queued' ? (
+          <BuildingHolding
+            title="Queued — not built yet"
+            body="The agent created this operation's shell and will build it out after the one it's writing now."
           />
         ) : (
           <>

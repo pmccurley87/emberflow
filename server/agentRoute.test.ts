@@ -144,6 +144,56 @@ describe('POST /agent — guided-setup route validation', () => {
   });
 });
 
+describe('agent-plan routes', () => {
+  it('rejects malformed plans', async () => {
+    const bad = async (body: unknown) =>
+      (
+        await fetch(`${base}/agent-plan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      ).status;
+    expect(await bad({})).toBe(400);
+    expect(await bad({ location: 'billing', ops: [] })).toBe(400);
+    expect(await bad({ location: 'billing', ops: [{ id: 'x' }] })).toBe(400);
+  });
+
+  it('accepts a plan while a run is live, normalizes bare slugs, and clears once no run is active', async () => {
+    // Start a (stubbed) run so the plan has a live owner.
+    const started = await postAgentWhenFree({ intent: { action: 'setup-environments', instruction: 'x' } });
+    expect(started.status).toBe(201);
+    const post = await fetch(`${base}/agent-plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        location: 'billing',
+        ops: [
+          { id: 'charge', name: 'Charge Card', method: 'post', path: '/billing/charge' },
+          { id: 'billing/refund', name: 'Refund' },
+        ],
+      }),
+    });
+    expect(post.status).toBe(201);
+
+    // The stub codex exits immediately; once the run is terminal the plan
+    // self-cleans on read. Poll GET until it reports null.
+    let plan: unknown = undefined;
+    for (let i = 0; i < 40; i++) {
+      const res = await fetch(`${base}/agent-plan`);
+      ({ plan } = (await res.json()) as { plan: unknown });
+      if (plan === null) break;
+      // While present it must carry the normalized ids.
+      const p = plan as { location: string; ops: Array<{ id: string; method?: string }> };
+      expect(p.location).toBe('billing');
+      expect(p.ops.map((o) => o.id)).toEqual(['billing/charge', 'billing/refund']);
+      expect(p.ops[0].method).toBe('POST');
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(plan).toBeNull();
+  });
+});
+
 /** The run manager is single-flight per project (409 while a previous stub run
  *  winds down) — retry briefly so route-validation asserts don't race it. */
 async function postAgentWhenFree(body: unknown): Promise<Response> {

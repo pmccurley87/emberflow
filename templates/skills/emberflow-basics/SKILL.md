@@ -60,6 +60,7 @@ export default defineConfig({
         outputSchema: { fields: [{ name: 'hello', type: 'string' }] },
         // effects: 'mutation'  ← add for nodes that write/POST/email; they dry-run under safe mode
         // traceKind: 'db'|'http'|'llm'  ← add for nodes that touch infrastructure; mock mode intercepts by this
+        // traceDetail: 'POST {BASE_URL}/api/…'  ← with a non-compute traceKind, name the real call (endpoint/query/model); shown in the inspector even for mock runs
       },
       async (ctx) => ({ hello: `Hello, ${ctx.input.name}!` }),
     );

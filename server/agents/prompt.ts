@@ -127,6 +127,7 @@ export function buildPrompt(
   lines.push('');
   const traceKindLine =
     'When you register a new node\'s implementation, set its traceKind honestly: `"db"`, `"http"`, or `"llm"` for anything that touches real infrastructure (a database, an external API/network call, a model call), omitted (or `"compute"`) for pure logic that only transforms its input. `traceKind` is the mock-mode infrastructure boundary — in a mock run, compute nodes execute for real but infra nodes require a canned output (see the mocks guidance for scenario-authoring tasks); a node that touches infrastructure but is left without a `traceKind` will silently execute for real during a mock run instead of being caught, so get this right when you author the node.' +
+    ' Alongside a non-compute traceKind, declare `traceDetail` — one line naming the real call (endpoint + method, query shape, or model), e.g. "POST {BASE_URL}/api/orders/sync". The studio shows it in the node inspector even for mock runs; without it readers see an empty trace panel.' +
     ' For mutation nodes (effects: "mutation"): the commit path (config.commit === true && !ctx.safeMode) performs the REAL side effect — these are operational APIs, and a commit branch that logs "[SIMULATED]" and returns success is FORBIDDEN. Mock mode and dry-run already cover design-time needs; if a required secret is missing at commit time, THROW an error naming the exact secretRef the user must set (studio Manage Environment dialog) — never fake success. doctor flags fake commits as simulated-commit.';
   lines.push('Existing registered node types you can reuse before authoring a new one:');
   if (availableNodes.length === 0) {
@@ -390,15 +391,21 @@ export function buildPrompt(
         `1. DESIGN FIRST. Read what the goal models (existing code when it names some — the model-process skill's process-boundary rules apply; the infrastructure manifest above when present). Write ONE short message to the panel before creating anything: the operations you intend (id + one line each) and why those boundaries. Then build — do not wait for approval.`,
       );
       lines.push(
-        `2. LAY DOWN THE SURFACE AS PLACEHOLDERS. Immediately after the design message, create EVERY operation you planned as a bare CLI shell — name and route only, no logic yet:`,
+        `2. DECLARE THE PLAN. Immediately after the design message, declare the surface in ONE command — the studio instantly shows every declared operation as a planned row in the sidebar, so the user sees what's coming before anything exists:`,
+      );
+      lines.push(
+        `     node ${EMBERFLOW_BIN} plan ${relPath} --ops '[{"id":"<slug>","name":"<Display Name>","method":"<METHOD>","path":"</route>"}, {"id":"<slug2>","name":"<Display Name 2>"}]'`,
+      );
+      lines.push(
+        `   One entry per planned operation; omit method/path for internal sub-flows. When the surface is MORE THAN ONE operation, give it a home: put every op in a folder named after the system (id "<folder>/<slug>", e.g. "daily-signals/dispatch") so related operations group together in the studio instead of floating loose at the location root — and use the SAME folder in every create path (${relPath}/<folder>/<slug>). Re-run \`plan\` with the full updated list if building teaches you the plan was wrong (an operation too many, a missing one) — and say so in one line. If this API already has operations, leave them out of the plan and leave them alone unless the goal explicitly requires changing them.`,
+      );
+      lines.push(
+        `3. BUILD EACH OUT, ONE AT A TIME. For each planned operation, create its shell then finish it completely (logic nodes, mocks, scenarios, a passing run) before touching the next — its planned row becomes a real operation the moment the create lands, and the studio marks the one you're writing as in-progress:`,
       );
       lines.push(`     node ${EMBERFLOW_BIN} create ${relPath}/<slug> --method <METHOD> --path </route> --name "<Display Name>"   (HTTP endpoint)`);
       lines.push(`     node ${EMBERFLOW_BIN} create ${relPath}/<slug> --name "<Display Name>"                                       (internal sub-flow)`);
       lines.push(
-        `   The studio lists each shell in the sidebar the moment it exists, so the whole planned surface is visible up front — the user sees what's coming before any of it is built. If this API already has operations, leave them alone unless the goal explicitly requires changing them.`,
-      );
-      lines.push(
-        `3. BUILD EACH OUT, ONE AT A TIME. Finish each operation completely (logic nodes, mocks, scenarios, a passing run) before touching the next — the studio marks the one you're writing as in-progress, which is exactly the experience the user should have. Shared internal processes become their own internal operations called via Subflow nodes. If building teaches you the plan was wrong (an operation too many, a missing one), adjust: delete or add shells and say so in one line.`,
+        `   Use the SAME <slug> you declared in the plan. Shared internal processes become their own internal operations called via Subflow nodes.`,
       );
       lines.push(
         `4. Register any node implementations each operation needs in the project config's registerNodes (one module — see the one-file rule in emberflow-basics). ${traceKindLine}`,

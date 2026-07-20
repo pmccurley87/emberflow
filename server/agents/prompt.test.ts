@@ -110,9 +110,13 @@ describe('buildPrompt', () => {
     // The agent designs the surface: how many operations, named what, HTTP vs internal.
     expect(prompt).toContain('API SURFACE');
     expect(prompt).toContain('YOUR design judgment');
-    // The planned surface lands as placeholder shells first, then each is
-    // built out one at a time so the studio shows them taking shape live.
-    expect(prompt).toContain('LAY DOWN THE SURFACE AS PLACEHOLDERS');
+    // The surface is declared up front (`plan` → sidebar ghost rows), then
+    // each op is built out one at a time so the studio shows it taking shape.
+    expect(prompt).toContain('DECLARE THE PLAN');
+    expect(prompt).toMatch(/plan billing --ops/);
+    // Multi-op surfaces group under a system folder instead of floating loose.
+    expect(prompt).toContain('give it a home');
+    expect(prompt).toContain('"<folder>/<slug>"');
     expect(prompt).toContain('ONE AT A TIME');
     expect(prompt).toContain('leave them alone');
     // Both create-CLI shapes: HTTP endpoint and internal sub-flow.
