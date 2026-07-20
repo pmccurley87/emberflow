@@ -3,6 +3,7 @@ import { CheckIcon, ChevronUpIcon, DownloadIcon, ListChecksIcon, Loader2Icon, Se
 import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useBuilderStore } from '../store/builderStore';
+import { buildFocus } from '../lib/buildFocus';
 import { setupProgress } from '../store/setupClient';
 import { fetchInfrastructure, type InfrastructureResponse } from '../store/infraClient';
 import { fetchUpdateStatus, postUpdate, type UpdateStatus } from '../store/updateClient';
@@ -236,6 +237,12 @@ export function StatusBar() {
   const setupStatus = useBuilderStore((s) => s.setupStatus);
   const setWelcomeOpen = useBuilderStore((s) => s.setWelcomeOpen);
   const agentRun = useBuilderStore((s) => s.agentRun);
+  const buildLedger = useBuilderStore((s) => s.buildLedger);
+  const agentPlan = useBuilderStore((s) => s.agentPlan);
+  const workflows = useBuilderStore((s) => s.workflows);
+  const openAgentPanel = useBuilderStore((s) => s.openAgentPanel);
+  const buildFocusNow =
+    agentRun?.status === 'running' ? buildFocus(buildLedger, agentPlan, workflows) : null;
 
   // Infrastructure chip: fetch on mount and whenever an agent run finishes (a
   // completed scout writes the manifest) — mirroring InfraTab's refetch. Shown
@@ -409,6 +416,27 @@ export function StatusBar() {
             <span className="shrink-0 font-mono tabular-nums text-muted-foreground/70">
               {progress.done}/{progress.total}
             </span>
+          </button>
+        </>
+      )}
+      {/* What the agent is building, for when the Agent panel is closed —
+          clicking opens the panel where the full stream lives. */}
+      {buildFocusNow?.id && (
+        <>
+          <Divider />
+          <button
+            type="button"
+            onClick={openAgentPanel}
+            title={`The agent is building ${buildFocusNow.name} — open the Agent panel`}
+            className={cn(segment, interactive)}
+          >
+            <Loader2Icon className="size-3 shrink-0 animate-spin text-highlight motion-reduce:animate-none" />
+            <span className="max-w-[180px] truncate text-foreground/80">{buildFocusNow.name}</span>
+            {buildFocusNow.total > 1 && (
+              <span className="shrink-0 font-mono tabular-nums text-muted-foreground/70">
+                {buildFocusNow.done}/{buildFocusNow.total}
+              </span>
+            )}
           </button>
         </>
       )}

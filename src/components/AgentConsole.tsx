@@ -1,13 +1,73 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowRightIcon, ArrowUpIcon, ChevronRightIcon, FileTextIcon, SparklesIcon, XIcon } from 'lucide-react';
+import {
+  ArrowRightIcon,
+  ArrowUpIcon,
+  ChevronRightIcon,
+  FileTextIcon,
+  LoaderCircleIcon,
+  SparklesIcon,
+  XIcon,
+} from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { buildFocus, type BuildFocus } from '../lib/buildFocus';
 import { operationIdFromFile } from '../lib/operationFiles';
 import { useBuilderStore } from '../store/builderStore';
 import type { AgentHistoryRun } from '../store/agentClient';
 import type { ScenarioTestReport } from '../store/serverRunner';
 import { AgentStream } from './AgentStream';
+
+/**
+ * "Working on" bar: while a build run is live, names the operation the agent
+ * is writing THIS tick, where it lives, and how far through the declared
+ * surface it is. Pinned under the panel header so it stays legible no matter
+ * how far the stream has scrolled — the stream says what the agent is
+ * thinking; this says what it is touching. Prop-driven for tests.
+ */
+export function BuildFocusBar({ focus, onOpen }: { focus: BuildFocus | null; onOpen: (id: string) => void }) {
+  if (!focus) return null;
+  const pct = focus.total > 0 ? Math.round((focus.done / focus.total) * 100) : 0;
+  return (
+    <div className="shrink-0 border-b border-border/70 bg-highlight/[0.04] px-3.5 py-2">
+      <div className="flex items-baseline gap-2">
+        <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          {focus.id ? 'Building' : 'Between operations'}
+        </span>
+        {focus.total > 0 && (
+          <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/70">
+            {focus.done}/{focus.total} built
+          </span>
+        )}
+      </div>
+      {focus.id && (
+        <button
+          type="button"
+          onClick={() => onOpen(focus.id!)}
+          title="Open this operation"
+          className="mt-0.5 flex w-full items-center gap-2 text-left"
+        >
+          <LoaderCircleIcon className="size-3 shrink-0 animate-spin text-highlight motion-reduce:animate-none" />
+          <span className="truncate text-[12.5px] font-medium text-foreground">{focus.name}</span>
+          {focus.location && (
+            <span className="ml-auto shrink-0 truncate font-mono text-[10px] text-muted-foreground/60">
+              {focus.location}
+            </span>
+          )}
+        </button>
+      )}
+      {/* Surface progress: quiet, and only once the plan has a real denominator. */}
+      {focus.total > 1 && (
+        <div className="mt-1.5 h-0.5 w-full overflow-hidden rounded-full bg-border">
+          <div
+            className="h-full rounded-full bg-highlight/70 transition-[width] duration-500 ease-out motion-reduce:transition-none"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Fallback chat label for a persisted run whose intent carried no free text. */
 const ACTION_LABELS: Record<string, string> = {
@@ -200,6 +260,9 @@ export function AgentConsole({ onDismiss }: { onDismiss: () => void }) {
   const steerQueue = useBuilderStore((s) => s.steerQueue);
   const queueSteer = useBuilderStore((s) => s.queueSteer);
   const agentHistory = useBuilderStore((s) => s.agentHistory);
+  const buildLedger = useBuilderStore((s) => s.buildLedger);
+  const agentPlan = useBuilderStore((s) => s.agentPlan);
+  const workflows = useBuilderStore((s) => s.workflows);
   const [instruction, setInstruction] = useState('');
   const running = agentRun?.status === 'running';
 
@@ -263,6 +326,9 @@ export function AgentConsole({ onDismiss }: { onDismiss: () => void }) {
 
   const finished = agentRun != null && agentRun.status !== 'running';
   const switchWorkflow = useBuilderStore((s) => s.switchWorkflow);
+  // Only while a run is live — a finished run's ledger is a record, not a
+  // "currently working on".
+  const focus = running ? buildFocus(buildLedger, agentPlan, workflows) : null;
 
   return (
     <div
@@ -291,6 +357,8 @@ export function AgentConsole({ onDismiss }: { onDismiss: () => void }) {
           <XIcon className="size-3.5" />
         </Button>
       </header>
+
+      <BuildFocusBar focus={focus} onOpen={(id) => switchWorkflow(id)} />
 
       <div
         ref={streamRef}

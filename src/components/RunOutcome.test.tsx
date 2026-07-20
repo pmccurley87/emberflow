@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { HistoryConversation, RunOutcome, operationIdFromFile } from './AgentConsole';
+import { BuildFocusBar, HistoryConversation, RunOutcome, operationIdFromFile } from './AgentConsole';
 
 describe('operationIdFromFile', () => {
   it('maps operation files to ids and rejects sidecars/meta/non-ops', () => {
@@ -95,5 +95,36 @@ describe('HistoryConversation', () => {
   it('failed runs read as failed', () => {
     const out = renderToStaticMarkup(<HistoryConversation run={{ ...run, status: 'error' as const }} />);
     expect(out).toContain('failed');
+  });
+});
+
+describe('BuildFocusBar', () => {
+  const focus = {
+    id: 'default/daily-signals/check-project',
+    name: 'Daily Project Signal Check',
+    location: 'default/daily-signals',
+    done: 1,
+    total: 3,
+  };
+
+  it('names the operation being built, where it lives, and surface progress', () => {
+    const out = renderToStaticMarkup(<BuildFocusBar focus={focus} onOpen={() => {}} />);
+    expect(out).toContain('Building');
+    expect(out).toContain('Daily Project Signal Check');
+    expect(out).toContain('default/daily-signals');
+    expect(out).toContain('1/3 built');
+  });
+
+  it('reads as between operations when no op is being written', () => {
+    const out = renderToStaticMarkup(
+      <BuildFocusBar focus={{ ...focus, id: null, name: null, location: null }} onOpen={() => {}} />,
+    );
+    expect(out).toContain('Between operations');
+    expect(out).toContain('1/3 built');
+    expect(out).not.toContain('Daily Project Signal Check');
+  });
+
+  it('renders nothing when there is no build focus', () => {
+    expect(renderToStaticMarkup(<BuildFocusBar focus={null} onOpen={() => {}} />)).toBe('');
   });
 });
